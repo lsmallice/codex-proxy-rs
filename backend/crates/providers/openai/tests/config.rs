@@ -134,3 +134,27 @@ fn websocket_pool_idle_timeout_rejects_zero() {
 fn valid_config() -> OpenAiConfig {
     OpenAiConfig::default()
 }
+
+#[test]
+fn opening_recovery_is_opt_in_and_rejects_unbounded_settings() {
+    let config: OpenAiConfig = serde_json::from_str("{}").unwrap();
+    assert!(!config.ws_opening_recovery.enabled);
+    assert_eq!(config.ws_opening_recovery.max_retries, 2);
+    for (retries, delay, valid) in [
+        (0, 50, true),
+        (5, 5000, true),
+        (6, 200, false),
+        (2, 0, false),
+        (2, 5001, false),
+    ] {
+        let mut config: OpenAiConfig = serde_json::from_value(serde_json::json!({
+            "ws_opening_recovery":{"enabled":true,"max_retries":retries,"retry_delay_ms":delay,"http_fallback":false}
+        })).unwrap();
+        assert_eq!(
+            config
+                .resolve_and_validate(Path::new("/srv/gateway"))
+                .is_ok(),
+            valid
+        );
+    }
+}

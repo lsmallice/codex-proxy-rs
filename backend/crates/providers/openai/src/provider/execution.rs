@@ -404,6 +404,7 @@ pub(super) struct ColdResponse {
     pub(super) guardian_routing: guardian::GuardianRouting,
     pub(super) websocket_retry_count: u32,
     pub(super) stream_max_retries: u32,
+    pub(super) ws_opening_recovery: crate::config::CodexWsOpeningRecovery,
     pub(super) session_capture: Option<OpenAiSessionCapture>,
 }
 
@@ -564,6 +565,7 @@ pub(super) async fn create_response_attempt(
     account_id: &str,
     deadline: gateway_core::lifecycle::Deadline,
     cancellation: &CancellationToken,
+    recovery: (crate::config::CodexWsOpeningRecovery, &mut bool),
 ) -> Result<CodexBackendStreamingResponse, CodexHandshakeAttemptError> {
     if deadline.is_elapsed() {
         return Err(CodexHandshakeAttemptError::Timeout);
@@ -572,10 +574,13 @@ pub(super) async fn create_response_attempt(
         biased;
         _ = cancellation.cancelled() => Err(CodexHandshakeAttemptError::Cancelled),
         _ = deadline.wait() => Err(CodexHandshakeAttemptError::Timeout),
-        response = client.create_response_stream_with_pool_account(
+        response = opening_recovery::create(
+            client,
             request,
             request_context,
-            Some(account_id),
+            account_id,
+            recovery.0,
+            recovery.1,
         ) => response.map_err(CodexHandshakeAttemptError::Client),
     }
 }
@@ -799,6 +804,7 @@ pub(super) fn cold_response_stream(response: ColdResponse) -> EventStream {
         guardian_routing,
         websocket_retry_count,
         stream_max_retries,
+        ws_opening_recovery,
         mut session_capture,
     } = response;
     Box::pin(async_stream::try_stream! {
@@ -833,6 +839,7 @@ pub(super) fn cold_response_stream(response: ColdResponse) -> EventStream {
         );
         let request_transport_requirement = transport_requirement(&request);
         let trace = context.trace();
+        let mut opening_recovery_used = false;
         let response = create_response_attempt(
             &client,
             &request,
@@ -848,11 +855,16 @@ pub(super) fn cold_response_stream(response: ColdResponse) -> EventStream {
             active_account.id().as_str(),
             context.deadline(),
             &cancellation,
+            (ws_opening_recovery, &mut opening_recovery_used),
         )
         .await;
+        // opening 恢复已独占本轮预算，终态不再进入 Core 换号或其他传输恢复
+        let finish_error = |error: ProviderError| {
+            if opening_recovery_used { error.with_retry_prohibited() } else { error }
+        };
         let websocket_failure_policy = match &response {
             Err(CodexHandshakeAttemptError::Client(error))
-                if transport_policy == CodexProviderTransport::PreferWebSocket =>
+                if !opening_recovery_used && transport_policy == CodexProviderTransport::PreferWebSocket =>
             {
                 websocket_client_failure_policy(error)
             }
@@ -891,11 +903,11 @@ pub(super) fn cold_response_stream(response: ColdResponse) -> EventStream {
                 }
                 apply_failure(&failure_context, &active_account, &failure)
                 .await;
-                Err(quota_continuation_replay_error(
+                Err(finish_error(quota_continuation_replay_error(
                     failure.error,
                     &request,
                     ReplayBoundary::BeforeSemanticOutput,
-                ))?;
+                )))?;
                 return;
             }
         };
@@ -1062,7 +1074,7 @@ pub(super) fn cold_response_stream(response: ColdResponse) -> EventStream {
                     } else {
                         None
                     };
-                    if failure.websocket_transport_retryable
+                    if !opening_recovery_used && failure.websocket_transport_retryable
                         && response_transport == CodexBackendTransport::WebSocket
                     {
                         apply_websocket_recovery_policy(
@@ -1095,11 +1107,11 @@ pub(super) fn cold_response_stream(response: ColdResponse) -> EventStream {
                     }
                     apply_failure(&failure_context, &active_account, &failure)
                     .await;
-                    Err(quota_continuation_replay_error(
+                    Err(finish_error(quota_continuation_replay_error(
                         failure.error,
                         &request,
                         ReplayBoundary::from_semantic_output(client_events.replay_closed()),
-                    ))?;
+                    )))?;
                     return;
                 }
             };
@@ -1250,11 +1262,11 @@ pub(super) fn cold_response_stream(response: ColdResponse) -> EventStream {
                         .error
                         .with_atomic_client_events(events);
                 }
-                Err(quota_continuation_replay_error(
+                Err(finish_error(quota_continuation_replay_error(
                     failure.error,
                     &request,
                     ReplayBoundary::from_semantic_output(failure_after_commit),
-                ))?;
+                )))?;
                 return;
             }
             let events = client_events.forward(events, timing_signals, completed);
@@ -1379,11 +1391,11 @@ pub(super) fn cold_response_stream(response: ColdResponse) -> EventStream {
                     .error
                     .with_atomic_client_events(events);
             }
-            Err(quota_continuation_replay_error(
+            Err(finish_error(quota_continuation_replay_error(
                 failure.error,
                 &request,
                 ReplayBoundary::from_semantic_output(failure_after_commit),
-            ))?;
+            )))?;
             return;
         }
         let events = client_events.forward(events, timing_signals, completed);

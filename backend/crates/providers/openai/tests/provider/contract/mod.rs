@@ -8,6 +8,7 @@ mod correlation;
 mod error_details;
 mod image_model_access;
 mod model_account_eligibility;
+mod opening_recovery;
 mod outbound;
 pub(super) use outbound::outbound_context;
 mod passthrough;

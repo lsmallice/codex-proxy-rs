@@ -243,11 +243,11 @@ flowchart LR
 mkdir -p codex-proxy-rs/deploy && cd codex-proxy-rs
 
 # 只解析一次最新正式版本，确保两个文件来自同一 Release。
-CPR_RELEASE_URL="$(curl -fsSL -o /dev/null -w '%{url_effective}' https://github.com/zyycn/codex-proxy-rs/releases/latest)"
+CPR_RELEASE_URL="$(curl -fsSL -o /dev/null -w '%{url_effective}' https://github.com/lsmallice/codex-proxy-rs/releases/latest)"
 CPR_RELEASE_TAG="${CPR_RELEASE_URL##*/}"
-curl -fsSL "https://github.com/zyycn/codex-proxy-rs/releases/download/${CPR_RELEASE_TAG}/compose.yaml" \
+curl -fsSL "https://github.com/lsmallice/codex-proxy-rs/releases/download/${CPR_RELEASE_TAG}/compose.yaml" \
   -o deploy/compose.yaml
-curl -fsSL "https://github.com/zyycn/codex-proxy-rs/releases/download/${CPR_RELEASE_TAG}/config.example.yaml" \
+curl -fsSL "https://github.com/lsmallice/codex-proxy-rs/releases/download/${CPR_RELEASE_TAG}/config.example.yaml" \
   -o deploy/config.example.yaml
 
 install -d -m 0750 .runtime/postgres .runtime/redis
@@ -318,7 +318,7 @@ store:
 发行包提供 Windows x64（`windows_amd64`）和 ARM64（`windows_arm64`）版本，按运行机器的 CPU 架构选择。
 需先准备可访问的 PostgreSQL 和 Redis，创建数据库及用户；使用数据库备份功能时，还需将匹配服务端版本的 `pg_dump` 加入 `PATH`
 
-从 [Release 附件](https://github.com/zyycn/codex-proxy-rs/releases) 下载对应的
+从 [Release 附件](https://github.com/lsmallice/codex-proxy-rs/releases) 下载对应的
 `codex-proxy-rs_<version>_windows_<arch>.tar.gz`，解压后保留 `codex-proxy-rs.exe`、`web/dist`、`deploy` 和 `plugins/official` 的目录关系。
 在解压后的 `codex-proxy-rs` 目录中打开 PowerShell，首次安装时创建配置：
 
@@ -754,6 +754,36 @@ OAuth 恢复开关为 `host.logging.oauth_recovery`，默认关闭，与普通�
 
 ## 请求错误排查
 
+### 空正文握手 403
+
+确认失败发生于 OAuth WebSocket 握手、尚未发送正文且响应正文为空时，可显式开启
+`openai.ws_opening_recovery`。默认关闭；这不是通用 403 或权限拒绝恢复开关
+
+```yaml
+openai:
+  ws_opening_recovery:
+    enabled: true
+    max_retries: 2
+    retry_delay_ms: 200
+    http_fallback: true
+```
+
+`max_retries` 是首次握手后的额外次数，范围 0–5；`retry_delay_ms` 范围 50–5000ms。
+有效 `Retry-After` 优先，超过 5 秒则保留错误，不提前重试或降级。
+同一账号、代理和凭据租约内完成握手尝试；用尽后仅在原版协议允许时走一次原生 HTTP/SSE。
+恢复链路的最终失败不再换号或切回 WS，不改后续请求的会话传输偏好
+
+`http_fallback` 只控制本策略的耗尽动作；原版因连接池忙、建连快路径超时等触发的
+HTTP 选择保持原样，不保证每个请求都先尝试满 N 次 WS
+
+非空错误正文、身份错误响应头、API Key 账号、已发送或发送状态不明的请求不进入此策略。
+WS 预热及已有 previous response 的续接不进入此策略；WS-only 新链可重试握手但不降级。
+现有请求截止时间、取消和连接预算继续生效。配置保存在挂载的 YAML 中，重启后生效；
+关闭 `enabled` 恢复默认行为，不需要数据库迁移。
+诊断时间线中的 `transport.opening_recovery.*` 标明拒绝、重试和降级，不记录令牌或正文
+
+### 排查步骤
+
 1. 先记录故障时间和时区、网关版本/提交、客户端名称与版本，以及 HTTP/SSE/WebSocket 传输。
    区分“上游返回”“网关实际响应”和“客户端终端展示”，不要只凭终端的统一文案推断根因
 2. 收集响应中的 `x-gateway-request-id`、`x-request-id` / `x-oai-request-id`；配置了
@@ -879,7 +909,7 @@ exp 不进入正式版、alpha、beta 或 rc，普通实例也不能选择 Exp�
 
 版本大小遵循 [SemVer](https://semver.org/)，构建元数据 `+...` 不参与比较。未知预发行标识不提供在线更新。
 更新器先过滤不允许的目标，再选择版本最高的候选；其他通道或更高大版本领先，不影响当前发行线的更新。
-只有当前官方构建满足在线更新条件且存在允许安装的新版本时，才返回“有可用更新”。否则不显示更新标记、
+只有当前发行构建满足在线更新条件且存在允许安装的新版本时，才返回“有可用更新”。否则不显示更新标记、
 其他通道的版本及发布说明，手动检查显示“当前没有可用更新”。检查失败单独报告，不能当作没有更新
 
 alpha、beta、rc、exp 在 GitHub 标记为 Pre-release，不覆盖 GitHub Latest 或镜像 `latest`。
@@ -887,7 +917,7 @@ alpha、beta、rc、exp 在 GitHub 标记为 Pre-release，不覆盖 GitHub Late
 
 ### 管理端在线更新
 
-在线更新要求官方构建且起始版本不低于 **v3.18.1**，版本选择遵循上述规则；源码等非官方构建返回不支持原因，不提供可用更新。
+在线更新要求发行构建且起始版本不低于 **v3.18.1**，版本选择遵循上述规则；普通源码构建返回不支持原因，不提供可用更新。
 不满足在线更新条件时，使用完整发行包或镜像[手动部署](#镜像升级与源码构建)。
 点击「下载并更新」后，操作日志显示下载、校验与安装过程，完成后显示「待重启」及待生效版本，重启后才使用新程序。
 「当前版本」始终表示正在运行的版本，「通道最新」表示所选通道的检查结果
@@ -916,7 +946,7 @@ YAML 中显式配置的值优先于对应环境变量
 
 Compose 提供以下在线更新运行参数：
 
-- `CPR_UPDATE_REPOSITORY`：只接受 `owner/repository`；默认 `zyycn/codex-proxy-rs`
+- `CPR_UPDATE_REPOSITORY`：只接受 `owner/repository`；默认 `lsmallice/codex-proxy-rs`
 - `CPR_GITHUB_API_BASE`：正式环境必须为 `https://api.github.com/repos`
 - `CPR_UPDATE_EXE_PATH`、`CPR_WEB_DIST_DIR`：分别指向容器内二进制和前端静态目录；
   `CPR_WEB_DIST_DIR` 同时供页面服务与更新器使用，相对路径以 `deploy/config.yaml` 所在目录为基准
@@ -937,6 +967,34 @@ Release 必须提供当前 OS/架构的 `codex-proxy-rs_<version>_<os>_<arch>.ta
 .runtime/data/update.lock
 .runtime/data/update-tmp/
 ```
+
+### 二开版本更新
+
+本仓库的 Release 工作流向 `lsmallice/codex-proxy-rs` 发布完整发行包，镜像为
+`ghcr.io/lsmallice/codex-proxy-rs:<version>`。在线更新沿用宿主的下载、校验、插件兼容确认与回滚流程
+
+首次从上游版本切换时，先备份数据库、配置和插件数据，再部署本仓库的完整发行镜像或归档。
+保留现有数据库、网络、代理、资源限制和数据挂载，不用新模板覆盖已有 Compose。
+在持久化部署配置中同时确认以下两项：
+
+- 应用镜像固定为本仓库已发布的版本；使用 `CPR_IMAGE` 时同步修改其持久化来源
+- `CPR_UPDATE_REPOSITORY=lsmallice/codex-proxy-rs`；若 YAML 已显式设置
+  `host.system_update.update_repository`，也需改为相同仓库，因为 YAML 优先
+
+应用配置并确认管理端显示预期版本后，后续发行可通过「系统更新 → 下载并更新 → 立即重启」安装。
+更新会中断在途请求，应安排维护窗口。网页更新不会改写宿主机 Compose 或镜像标签；
+更新后须将持久化的应用镜像版本同步到已安装版本，否则重建容器会恢复镜像内的旧程序。
+直接重启同一容器保留其可写层，删除或重建容器则不保留
+
+维护者需先合并上游代码并验证，再从 `main` 使用 `release/publish --check <version>` 检查发行条件；
+确认发布时使用 `release/publish <version>`，该命令会提交版本文件、打 tag、推送并触发 Release 工作流。
+版本须按前述 SemVer 规则递增，不能仅修改 `+...` 构建元数据；新 tag 不得复用已发布的上游或本仓库版本
+
+首次发布前需启用本仓库 Actions，允许工作流写入 Releases 和 GHCR，并让部署节点可拉取镜像
+（公开部署需将 GHCR 包设为 Public）。更新器匿名查询 GitHub，仓库及发行附件须公开可读。
+发行成功须同时核对 Release 附件、校验文件和多架构镜像；
+仅有 tag 或源码归档不能在线更新。构建类型和封口清单由工作流生成，不手动伪造元数据绕过校验。
+新建 Release 不会自动升级线上服务，也不会自动合并上游代码
 
 ### 插件兼容与发行目录
 

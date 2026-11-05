@@ -22,7 +22,7 @@ Rust 工具链声明位于 `backend/rust-toolchain.toml`，从仓库根目录运
 `--manifest-path` 只选择 manifest，不切换 rustup 按当前目录选定的工具链
 
 ```bash
-git clone https://github.com/zyycn/codex-proxy-rs.git
+git clone https://github.com/lsmallice/codex-proxy-rs.git
 cd codex-proxy-rs
 pnpm --dir frontend install --frozen-lockfile
 ```
@@ -82,7 +82,7 @@ pnpm --dir frontend dev
 首次检出可同时下载子模块：
 
 ```bash
-git clone --recurse-submodules https://github.com/zyycn/codex-proxy-rs.git
+git clone --recurse-submodules https://github.com/lsmallice/codex-proxy-rs.git
 cd codex-proxy-rs
 ```
 

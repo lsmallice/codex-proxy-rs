@@ -7,21 +7,24 @@
 
 面向 Codex 的自托管多账号 AI 网关
 
-[![CI](https://github.com/zyycn/codex-proxy-rs/actions/workflows/ci.yml/badge.svg)](https://github.com/zyycn/codex-proxy-rs/actions/workflows/ci.yml)
-[![Release](https://img.shields.io/github/v/release/zyycn/codex-proxy-rs?display_name=tag&sort=semver&style=flat-square)](https://github.com/zyycn/codex-proxy-rs/releases)
-[![GHCR](https://img.shields.io/badge/GHCR-codex--proxy--rs-2496ED?logo=docker&logoColor=white&style=flat-square)](https://github.com/zyycn/codex-proxy-rs/pkgs/container/codex-proxy-rs)
+[![CI](https://github.com/lsmallice/codex-proxy-rs/actions/workflows/ci.yml/badge.svg)](https://github.com/lsmallice/codex-proxy-rs/actions/workflows/ci.yml)
+[![Release](https://img.shields.io/github/v/release/lsmallice/codex-proxy-rs?display_name=tag&sort=semver&style=flat-square)](https://github.com/lsmallice/codex-proxy-rs/releases)
+[![GHCR](https://img.shields.io/badge/GHCR-codex--proxy--rs-2496ED?logo=docker&logoColor=white&style=flat-square)](https://github.com/lsmallice/codex-proxy-rs/pkgs/container/codex-proxy-rs)
 [![License: Apache 2.0](https://img.shields.io/badge/License-Apache%202.0-blue.svg?style=flat-square)](LICENSE)
 
 [快速预览](#快速预览) · [快速开始](#快速开始) · [客户端接入](#客户端接入) · [文档](#文档) · [社区](#社区) · [许可证](#许可证)
 
 </div>
 
+本仓库是 [zyycn/codex-proxy-rs](https://github.com/zyycn/codex-proxy-rs) 的二开版本，安装与在线更新默认使用
+`lsmallice/codex-proxy-rs` 的发行物，不会自动合并上游代码。首次切换与发布要求见[二开版本更新](deploy/README.md#二开版本更新)
+
 > [!NOTE]
 > 本项目提供 Responses API 和 Chat Completions API；Chat Completions 请求通过 Responses 链路执行，支持范围见 [API 参考](docs/api.md#chat-completions-请求)
 
 ## 快速预览
 
-无需部署即可体验管理端的系统概览、账号分组、代理管理与用量统计：
+以下为上游项目的公开预览，不包含本仓库的定制功能：
 
 | 登录信息 | 默认值 |
 | --- | --- |
@@ -49,7 +52,7 @@ Windows x64 / ARM64 使用发行包部署，步骤见 [Windows 二进制部署](
 请确保当前用户能访问 Docker，并可通过 `sudo` 或 root 设置目录权限
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/zyycn/codex-proxy-rs/main/deploy/install.sh -o install.sh && bash install.sh
+curl -fsSL https://raw.githubusercontent.com/lsmallice/codex-proxy-rs/main/deploy/install.sh -o install.sh && bash install.sh
 ```
 
 [安装脚本](deploy/install.sh) 默认安装到当前目录下的 `codex-proxy-rs/`，下载同一正式 Release 的部署文件，
@@ -127,7 +130,7 @@ curl http://127.0.0.1:8080/v1/models \
 
 ## 社区
 
-问题反馈与功能建议请使用 [GitHub Issues](https://github.com/zyycn/codex-proxy-rs/issues)，填写要求见 [贡献说明](CONTRIBUTING.md#提交-issue)
+上游项目的社区入口为 [GitHub Issues](https://github.com/zyycn/codex-proxy-rs/issues)，二开特有问题请在本仓库反馈
 
 感谢 [LINUX DO](https://linux.do) 社区提供开放、友善的技术交流平台
 

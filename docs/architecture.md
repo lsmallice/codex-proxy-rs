@@ -489,6 +489,10 @@ API 暂存的下一轮请求和连接泵接收队列共用容量名额，控制�
 Core 只理解 `Operation`、能力要求、Provider 候选、稳定错误和 canonical event，不读取 Provider SDK
 类型。Provider 独占 credential schema、OAuth、账号选择、模型目录、额度投影和上游 transport
 
+显式开启的空正文握手 403 恢复归 OpenAI Provider 所有，在同一账号租约、client 与取消/截止时间
+范围内执行。仅握手阶段的无正文拒绝可进入；SSE 发送、解码、用量及账号处置复用原生链路。
+恢复终态禁止再次进入 Core 重试，不改全局错误分类或后续会话的传输选择
+
 Responses 下游连接的心跳和退出由 API 拥有，每条 WS 使用独立取消信号，沿 Core 的 `ResponseControl` 传到 Provider 请求上下文。
 单轮执行结束不取消连接生命周期，连接退出则取消当前执行及仍归它所有的上游资源；API 不直接调用具体 Provider 清池。
 OpenAI 的连接池监督该取消信号，按当前归属保护绑定连接；精确续接接手 socket 时撤销旧控制收发并转移归属，旧客户端不能消费新响应或清理新 owner 的连接。

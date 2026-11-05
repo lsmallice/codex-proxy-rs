@@ -41,6 +41,8 @@ pub struct OpenAiConfig {
     #[serde(default = "default_stream_max_retries")]
     pub stream_max_retries: u64,
     #[serde(default)]
+    pub ws_opening_recovery: CodexWsOpeningRecovery,
+    #[serde(default)]
     pub residency: Option<String>,
     #[serde(default)]
     pub account_routing_override: Option<String>,
@@ -64,6 +66,7 @@ impl OpenAiConfig {
         self.ws_pool.validate()?;
         self.quota.validate()?;
         self.auth.validate()?;
+        self.ws_opening_recovery.validate()?;
         self.identity_secret_path = runtime_data_dir.join("identity_hmac_secret");
         Ok(())
     }
@@ -124,10 +127,48 @@ impl Default for OpenAiConfig {
             quota: CodexQuotaSettings::default(),
             auth: CodexAuthSettings::default(),
             stream_max_retries: DEFAULT_STREAM_MAX_RETRIES,
+            ws_opening_recovery: CodexWsOpeningRecovery::default(),
             residency: None,
             account_routing_override: None,
             identity_secret_path: PathBuf::new(),
         }
+    }
+}
+
+/// 空正文 WS opening 403 的显式有界恢复策略，不放宽普通权限拒绝
+#[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
+#[serde(default, deny_unknown_fields)]
+pub struct CodexWsOpeningRecovery {
+    pub enabled: bool,
+    pub max_retries: u32,
+    pub retry_delay_ms: u64,
+    pub http_fallback: bool,
+}
+
+impl Default for CodexWsOpeningRecovery {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            max_retries: 2,
+            retry_delay_ms: 200,
+            http_fallback: true,
+        }
+    }
+}
+
+impl CodexWsOpeningRecovery {
+    fn validate(self) -> Result<(), OpenAiConfigError> {
+        if self.max_retries > 5 {
+            return Err(OpenAiConfigError::InvalidField(
+                "openai.ws_opening_recovery.max_retries",
+            ));
+        }
+        if !(50..=5000).contains(&self.retry_delay_ms) {
+            return Err(OpenAiConfigError::InvalidField(
+                "openai.ws_opening_recovery.retry_delay_ms",
+            ));
+        }
+        Ok(())
     }
 }
 

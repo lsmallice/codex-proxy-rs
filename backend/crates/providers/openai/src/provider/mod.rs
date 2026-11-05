@@ -107,6 +107,7 @@ mod failure;
 mod guardian;
 mod live;
 mod observation;
+mod opening_recovery;
 mod upstream_adapter;
 mod workers;
 pub(crate) use live::{CodexLiveGateway, CodexLiveRegistry};
@@ -155,6 +156,7 @@ pub struct CodexProvider {
     session_transport_recovery: CodexSessionTransportRecovery,
     guardian_routing: guardian::GuardianRouting,
     stream_max_retries: u32,
+    ws_opening_recovery: crate::config::CodexWsOpeningRecovery,
     live_registry: Arc<CodexLiveRegistry>,
     live_gateway: Option<Arc<CodexLiveGateway>>,
 }
@@ -360,9 +362,19 @@ impl CodexProvider {
             session_transport_recovery: CodexSessionTransportRecovery::default(),
             guardian_routing: guardian::GuardianRouting::default(),
             stream_max_retries,
+            ws_opening_recovery: crate::config::CodexWsOpeningRecovery::default(),
             live_registry: Arc::new(CodexLiveRegistry::default()),
             live_gateway: None,
         })
+    }
+
+    #[must_use]
+    pub fn with_ws_opening_recovery(
+        mut self,
+        policy: crate::config::CodexWsOpeningRecovery,
+    ) -> Self {
+        self.ws_opening_recovery = policy;
+        self
     }
 
     #[must_use]
@@ -1168,6 +1180,13 @@ impl CodexProvider {
             guardian_routing: self.guardian_routing.clone(),
             websocket_retry_count,
             stream_max_retries: self.stream_max_retries,
+            ws_opening_recovery: if codex_oauth
+                && transport == CodexProviderTransport::PreferWebSocket
+            {
+                self.ws_opening_recovery
+            } else {
+                crate::config::CodexWsOpeningRecovery::default()
+            },
             session_capture,
         });
         let stream = ProviderStream::new(metadata, events, lease);

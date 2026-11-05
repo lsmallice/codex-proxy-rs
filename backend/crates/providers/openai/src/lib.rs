@@ -195,6 +195,7 @@ pub async fn initialize(
             config.stream_max_retries(),
         )
         .map_err(OpenAiInitializeError::Provider)?
+        .with_ws_opening_recovery(config.ws_opening_recovery)
         .with_session_identity(session_identity)
         .with_timezone(config.timezone)
         .with_live_support(repository.clone()),

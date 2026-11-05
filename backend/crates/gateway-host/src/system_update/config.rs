@@ -12,7 +12,7 @@ use crate::ConfigError;
 
 const APP_BINARY_NAME: &str = "codex-proxy-rs";
 const DEFAULT_GITHUB_API_BASE: &str = "https://api.github.com/repos";
-const DEFAULT_UPDATE_REPOSITORY: &str = "zyycn/codex-proxy-rs";
+const DEFAULT_UPDATE_REPOSITORY: &str = "lsmallice/codex-proxy-rs";
 
 /// 系统更新与重启配置；所有字段只由 Host 解释
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]

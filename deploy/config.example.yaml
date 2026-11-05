@@ -84,6 +84,12 @@ openai:
   residency: us
   # 账号路由参考值：us、us_cr
   account_routing_override: null
+  # 可选：仅 OAuth 空正文 WS 握手 403 的请求内恢复，默认关闭
+  # ws_opening_recovery:
+  #   enabled: false
+  #   max_retries: 2 # 首次握手以外的次数，0-5
+  #   retry_delay_ms: 200 # 50-5000，Retry-After 优先
+  #   http_fallback: true # 仅原版允许 HTTP 的请求，最多一次
   # 可选：完整的 Responses 上游 WS 池配置；省略整段使用以下默认值。
   # ws_pool:
   #   enabled: true
