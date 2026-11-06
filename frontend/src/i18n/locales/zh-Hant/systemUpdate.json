@@ -1,5 +1,34 @@
 {
   "systemUpdate": {
+    "sources": {
+      "current": "更新當前來源",
+      "preview": "切換發行來源",
+      "view": "更新視圖",
+      "label": "發行來源",
+      "fork": "我們的二開",
+      "official": "官方原版",
+      "stage": "發布階段",
+      "inspect": "查詢並預檢",
+      "readOnly": "僅查詢和預檢，不保存來源，不安裝或重啟",
+      "officialWarning": "切回官方後，二開冷卻、重試及插件容量配置不再生效",
+      "loading": "正在查詢發行和切換條件",
+      "configured": "當前配置來源",
+      "target": "查詢來源",
+      "noRelease": "未找到發行",
+      "results": "切換預檢結果",
+      "passed": "已滿足",
+      "blocked": "阻止切換",
+      "pending": "尚未驗證",
+      "checkSource": "來源配置",
+      "checkBuild": "構建資格",
+      "checkVersion": "版本規則",
+      "checkAssets": "發行資源",
+      "checkDatabase": "數據庫兼容性",
+      "checkPlugins": "插件兼容性",
+      "checkDeployment": "部署持久化",
+      "checkSwitch": "實際換版",
+      "close": "關閉"
+    },
     "channels": {
       "stable": {
         "label": "Stable · 正式",

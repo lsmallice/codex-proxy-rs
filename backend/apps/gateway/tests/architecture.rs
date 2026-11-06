@@ -466,6 +466,7 @@ const ADAPTER_PUBLIC_MODULES: &[(&str, &[&str])] = &[
         &[
             "client_distribution",
             "config",
+            "fork_settings",
             "outbound",
             "peer",
             "official_plugins",

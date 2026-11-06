@@ -372,6 +372,7 @@ where
             pending_retry: None,
             transient_retry_counts: BTreeMap::new(),
             request_profiles: BTreeMap::new(),
+            provider_policies: BTreeMap::new(),
             current: None,
             send_state_watermark: UpstreamSendState::NotSent,
             delivery_committed: false,
@@ -536,6 +537,8 @@ pub struct ResponseExecutionSession<S: ?Sized> {
     transient_retry_counts: BTreeMap<crate::account::ProviderAccountId, u32>,
     /// 只在首次进入对应 Provider 时解析，避免后台发布更新改变同一请求的重试身份
     request_profiles: BTreeMap<crate::identity::ProviderKind, crate::account::OpaqueProviderData>,
+    provider_policies:
+        BTreeMap<crate::identity::ProviderKind, Option<crate::account::OpaqueProviderData>>,
     current: Option<CurrentAttempt>,
     /// 请求级发送状态水位；跨 attempt 单调不降，终态写回不得低于此档
     send_state_watermark: UpstreamSendState,
@@ -1125,6 +1128,9 @@ where
             .ok_or_else(|| EngineError::ProviderNotRegistered {
                 provider: candidate.provider().as_str().to_owned(),
             })?;
+        self.provider_policies
+            .entry(candidate.provider().clone())
+            .or_insert_with(|| provider.request_policy_snapshot(&self.operation));
         if !self.request_profiles.contains_key(candidate.provider()) {
             let profile = match self
                 .plan
@@ -1165,6 +1171,12 @@ where
                 .with_lease_metadata(Arc::clone(&self.lease_metadata))
                 .with_response_control(self.response_control.clone())
                 .with_request_profile(self.request_profiles.get(candidate.provider()).cloned())
+                .with_provider_policy(
+                    self.provider_policies
+                        .get(candidate.provider())
+                        .cloned()
+                        .flatten(),
+                )
                 .with_fast_mode(self.plan.fast_mode())
                 .with_pricing(self.plan.pricing())
                 .with_request_location(self.plan.request_location().cloned())

@@ -84,6 +84,27 @@ openai:
   residency: us
   # 账号路由参考值：us、us_cr
   account_routing_override: null
+  # 模型不支持冷却，单位秒，0 表示不写入且忽略已有模型级冷却；范围 0-86400
+  model_unsupported_cooldown_seconds: 1800
+  # 原生 Responses 参数兼容；独立开关，不需要请求兼容插件，不映射推理档位
+  # request_compatibility:
+  #   lite_context: false
+  #   store_false: false # 仅选中的 OAuth 账号；不改变 API Key 的存储意图
+  #   json_object: false
+  #   min_output_tokens_16: false # 路由前修正 gpt-/codex- 请求的小整数输出预算
+  #   tool_structure: false # 修复嵌套 function 结构；非法名称返回 400，不删除工具
+  # 可选：无实质输出时有界补发，与握手恢复互斥，默认关闭
+  # ws_response_recovery:
+  #   enabled: false
+  #   max_retries: 1 # 首次请求以外的补发次数，0-5；0 关闭断流补发
+  #   full_history: false # 续接失败时只重放宿主摘要确认的完整历史
+  #   encrypted_history: false # 明确拒绝的密文定点清理一次，并记忆摘要 30 分钟
+  #   encrypted_history_max_sessions: 65536 # 1-65536；仅拒绝过密文的范围占用缓存
+  #   encrypted_history_max_digests_per_session: 512 # 1-512；无额外全局摘要上限
+  #   window_ms: 5000 # 1-10000
+  #   max_prefix_bytes: 65536 # 1024-262144
+  #   close_codes: [1000, 1011, 1012] # 允许 1000/1001/1011/1012/1013
+  #   disconnects: true # 无关闭握手、TCP reset/aborted、broken pipe、unexpected EOF
   # 可选：仅 OAuth 空正文 WS 握手 403 的请求内恢复，默认关闭
   # ws_opening_recovery:
   #   enabled: false
@@ -97,6 +118,19 @@ openai:
   #   max_connecting: 8
   #   idle_timeout_ms: 300000 # 仅回收未绑定活跃客户端 WS 的空闲连接，必须大于零。
   #   stream_idle_timeout_ms: 300000
+
+# 可选：插件宿主启动配置，修改后重启，省略保持既有容量与绑定行为
+# plugins:
+#   rpc:
+#     maximum_calls: 512 # 默认 256，上限 1024
+#     maximum_executing_calls: 64
+#     maximum_queued_calls: 64
+#     maximum_callbacks: 1024 # 默认 320，上限 4096
+#     queue_timeout_ms: 30000
+#   http_filters:
+#     'a0f1ee31-0005-8e2a-bfd9-30e7de51c321': # 替换为实际插件实例 ID
+#       - { method: POST, path: /v1/responses }
+#       - { method: POST, path: /responses }
 
 # Compose 启动桥接区；密码仍只维护在 store 中。
 services:

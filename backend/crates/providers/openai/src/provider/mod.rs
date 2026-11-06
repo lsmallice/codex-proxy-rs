@@ -102,12 +102,14 @@ use crate::transport::{
     CodexUpstreamDiagnostics, CodexWebSocketPool, endpoint_url,
 };
 
+mod encrypted_history;
 mod execution;
 mod failure;
 mod guardian;
 mod live;
 mod observation;
 mod opening_recovery;
+mod response_recovery;
 mod upstream_adapter;
 mod workers;
 pub(crate) use live::{CodexLiveGateway, CodexLiveRegistry};
@@ -157,6 +159,11 @@ pub struct CodexProvider {
     guardian_routing: guardian::GuardianRouting,
     stream_max_retries: u32,
     ws_opening_recovery: crate::config::CodexWsOpeningRecovery,
+    ws_response_recovery: crate::config::CodexWsResponseRecovery,
+    request_compatibility: crate::config::CodexRequestCompatibility,
+    fork_runtime: Option<Arc<crate::OpenAiForkRuntime>>,
+    response_recovery_slots: Arc<tokio::sync::Semaphore>,
+    rejected_ciphertexts: Arc<encrypted_history::Cache>,
     live_registry: Arc<CodexLiveRegistry>,
     live_gateway: Option<Arc<CodexLiveGateway>>,
 }
@@ -363,6 +370,11 @@ impl CodexProvider {
             guardian_routing: guardian::GuardianRouting::default(),
             stream_max_retries,
             ws_opening_recovery: crate::config::CodexWsOpeningRecovery::default(),
+            ws_response_recovery: crate::config::CodexWsResponseRecovery::default(),
+            request_compatibility: crate::config::CodexRequestCompatibility::default(),
+            fork_runtime: None,
+            response_recovery_slots: Arc::new(tokio::sync::Semaphore::new(16)),
+            rejected_ciphertexts: Arc::new(encrypted_history::Cache::default()),
             live_registry: Arc::new(CodexLiveRegistry::default()),
             live_gateway: None,
         })
@@ -374,6 +386,32 @@ impl CodexProvider {
         policy: crate::config::CodexWsOpeningRecovery,
     ) -> Self {
         self.ws_opening_recovery = policy;
+        self
+    }
+
+    #[must_use]
+    pub fn with_request_compatibility(
+        mut self,
+        policy: crate::config::CodexRequestCompatibility,
+    ) -> Self {
+        self.request_compatibility = policy;
+        self
+    }
+
+    pub fn with_ws_response_recovery(
+        mut self,
+        policy: crate::config::CodexWsResponseRecovery,
+    ) -> Self {
+        self.rejected_ciphertexts = Arc::new(encrypted_history::Cache::new(
+            policy.encrypted_history_max_sessions,
+            policy.encrypted_history_max_digests_per_session,
+        ));
+        self.ws_response_recovery = policy;
+        self
+    }
+
+    pub fn with_fork_runtime(mut self, runtime: Option<Arc<crate::OpenAiForkRuntime>>) -> Self {
+        self.fork_runtime = runtime;
         self
     }
 
@@ -416,6 +454,20 @@ impl fmt::Debug for CodexProvider {
 
 #[async_trait]
 impl Provider for CodexProvider {
+    fn request_policy_snapshot(
+        &self,
+        operation: &Operation,
+    ) -> Option<gateway_core::account::OpaqueProviderData> {
+        let runtime = self.fork_runtime.as_ref()?;
+        let policy = crate::OpenAiForkSettings::from_operation(operation)
+            .map(Arc::new)
+            .unwrap_or_else(|| runtime.snapshot());
+        serde_json::to_value(policy.as_ref())
+            .ok()?
+            .as_object()
+            .cloned()
+            .map(gateway_core::account::OpaqueProviderData::new)
+    }
     fn is_direct_account(&self, authentication_kind: &str) -> bool {
         crate::credential::is_direct_account_kind(authentication_kind)
     }
@@ -583,6 +635,28 @@ impl Provider for CodexProvider {
         request: ProviderRequest,
         context: AttemptContext,
     ) -> Result<ProviderStream, ProviderError> {
+        if let Some(runtime) = &self.fork_runtime {
+            let policy = context
+                .provider_policy()
+                .and_then(|value| {
+                    serde_json::from_value::<crate::OpenAiForkSettings>(json!(
+                        value.expose_to_provider()
+                    ))
+                    .ok()
+                })
+                .or_else(|| crate::OpenAiForkSettings::from_operation(request.operation()))
+                .map(Arc::new)
+                .unwrap_or_else(|| runtime.snapshot());
+            let mut frozen = self.as_ref().clone();
+            frozen.fork_runtime = None;
+            frozen.request_compatibility = policy.request_compatibility;
+            frozen.ws_opening_recovery = policy.ws_opening_recovery;
+            frozen.ws_response_recovery = policy.ws_response_recovery.clone();
+            frozen.selector = Arc::new(self.selector.with_model_unsupported_cooldown(
+                Duration::from_secs(policy.model_unsupported_cooldown_seconds),
+            ));
+            return Arc::new(frozen).execute(request, context).await;
+        }
         if request.candidate().provider().as_str() != PROVIDER_NAME {
             return Err(provider_error(
                 ProviderErrorKind::InvalidRequest,
@@ -839,6 +913,21 @@ impl CodexProvider {
         );
         let mut upstream = encode_generate_request(&generate, upstream_model.as_str(), None)
             .map_err(map_request_error)?;
+        let codex_oauth = matches!(
+            lease.authentication(),
+            crate::credential::CodexRuntimeAuthentication::OAuth(_)
+        );
+        let compatibility = crate::compat::apply_selected_request_compatibility(
+            &mut upstream,
+            self.request_compatibility,
+            codex_oauth,
+        );
+        if compatibility.changed() {
+            context.trace().record(
+                "request.compatibility.selected",
+                json!({"storeFalse":compatibility.store,"jsonInstruction":compatibility.json}),
+            );
+        }
         upstream.client_account_follow_only = crate::request_identity::follows_session_with_headers(
             generate.protocol_payload().body(),
             generate.protocol_payload().context(),
@@ -885,6 +974,41 @@ impl CodexProvider {
         let provider_kind = ProviderKind::new(PROVIDER_NAME)
             .map_err(|_| provider_error(ProviderErrorKind::Protocol, UpstreamSendState::NotSent))?;
         let native_owner = context.continuation().and_then(ContinuationBinding::pinned);
+        let history = (self.ws_response_recovery.full_history && !compatibility.json)
+            .then(|| {
+                response_recovery::HistoryProof::prepare(
+                    generate
+                        .protocol_payload()
+                        .body()
+                        .get("input")
+                        .unwrap_or(&Value::Null),
+                    previous_session
+                        .as_ref()
+                        .and_then(|state| state.history.as_ref()),
+                    continuation_requested,
+                    lease.account().revision().get(),
+                )
+            })
+            .flatten();
+        let full_history_verified = self.ws_response_recovery.full_history
+            && !compatibility.json
+            && !middleware_headers
+                .iter()
+                .any(|header| header.name().eq_ignore_ascii_case("x-codex-turn-state"))
+            && native_owner.is_some_and(|owner| owner.matches(&provider_kind, lease.account_id()))
+            && previous_session
+                .as_ref()
+                .and_then(|state| state.history.as_ref())
+                .is_some_and(|proof| {
+                    proof.matches(
+                        generate
+                            .protocol_payload()
+                            .body()
+                            .get("input")
+                            .unwrap_or(&Value::Null),
+                        lease.account().revision().get(),
+                    )
+                });
         let state_owner_cross_account = native_owner
             .is_some_and(|owner| !owner.matches(&provider_kind, lease.account_id()))
             || context
@@ -1003,10 +1127,6 @@ impl CodexProvider {
                 "after": crate::transport::diagnostics::evidence::request_state(&upstream_request),
             }));
         }
-        let codex_oauth = matches!(
-            lease.authentication(),
-            crate::credential::CodexRuntimeAuthentication::OAuth(_)
-        );
         if codex_oauth {
             let responses_lite = upstream_request.responses_lite.as_deref() == Some("true");
             crate::compat::normalize_selected_codex_downstream_body(
@@ -1145,6 +1265,7 @@ impl CodexProvider {
                 response_store,
                 oversized_http,
                 continuation_scope: None,
+                history,
             });
         let allows_account_state_mutation = lease.allows_account_state_mutation();
         let session_transport_key_hash = session_transport_key
@@ -1154,6 +1275,20 @@ impl CodexProvider {
             AttemptTransport::Retry(retry_index) => retry_index.get(),
             AttemptTransport::Default | AttemptTransport::Fallback => 0,
         };
+        let mut response_recovery_policy = if context.is_diagnostic_required_account() {
+            crate::config::CodexWsResponseRecovery::default()
+        } else {
+            self.ws_response_recovery.clone()
+        };
+        response_recovery_policy.encrypted_history &= codex_oauth
+            && transport == CodexProviderTransport::PreferWebSocket
+            && allows_account_state_mutation
+            // 最终出站改写后的密文不一定等于当前请求，不能记错摘要或撤销隐私策略
+            && outbound_middleware.is_none()
+            && context.privacy().is_none()
+            && !middleware_headers
+                .iter()
+                .any(|header| header.name().eq_ignore_ascii_case("x-codex-turn-state"));
         let events = cold_response_stream(ColdResponse {
             installation_id,
             client: client
@@ -1188,6 +1323,10 @@ impl CodexProvider {
                 crate::config::CodexWsOpeningRecovery::default()
             },
             session_capture,
+            ws_response_recovery: response_recovery_policy,
+            full_history_verified,
+            response_recovery_slots: Arc::clone(&self.response_recovery_slots),
+            rejected_ciphertexts: Arc::clone(&self.rejected_ciphertexts),
         });
         let stream = ProviderStream::new(metadata, events, lease);
         Ok(if allows_account_state_mutation {

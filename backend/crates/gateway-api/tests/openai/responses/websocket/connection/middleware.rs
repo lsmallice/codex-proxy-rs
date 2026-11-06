@@ -265,6 +265,8 @@ async fn turns_refresh_host_settings_and_key_identity_while_preserving_handshake
     );
     let router = gateway_api::initialize(
         gateway_api::ApiConfig {
+            responses_policy_source: None,
+            responses_compatibility: Default::default(),
             asset_directory: std::env::temp_dir(),
             cors_allowed_origins: vec![],
             request_timeout_seconds: None,

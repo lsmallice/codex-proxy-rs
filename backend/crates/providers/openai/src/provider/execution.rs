@@ -406,6 +406,10 @@ pub(super) struct ColdResponse {
     pub(super) stream_max_retries: u32,
     pub(super) ws_opening_recovery: crate::config::CodexWsOpeningRecovery,
     pub(super) session_capture: Option<OpenAiSessionCapture>,
+    pub(super) ws_response_recovery: crate::config::CodexWsResponseRecovery,
+    pub(super) full_history_verified: bool,
+    pub(super) response_recovery_slots: Arc<tokio::sync::Semaphore>,
+    pub(super) rejected_ciphertexts: Arc<encrypted_history::Cache>,
 }
 
 pub(super) struct ColdJsonResponse {
@@ -436,6 +440,8 @@ pub(super) struct OpenAiSessionState {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(super) reasoning_effort_override: Option<String>,
     pub(super) continuation_scope: OpenAiContinuationScope,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) history: Option<response_recovery::HistoryProof>,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -456,6 +462,7 @@ pub(super) struct OpenAiSessionCapture {
     pub(super) response_store: bool,
     pub(super) oversized_http: bool,
     pub(super) continuation_scope: Option<OpenAiContinuationScope>,
+    pub(super) history: Option<response_recovery::HistoryProof>,
 }
 
 pub(super) fn same_client_turn(previous: Option<&str>, current: Option<&str>) -> bool {
@@ -502,6 +509,7 @@ fn encode_openai_session_capture(
         client_turn_id: capture.client_turn_id.clone(),
         reasoning_effort_override: capture.reasoning_effort_override.clone(),
         continuation_scope,
+        history: capture.history.clone(),
     })
 }
 
@@ -515,9 +523,17 @@ pub(super) fn attach_openai_session_update(
     else {
         return;
     };
-    let Some(capture) = capture.take() else {
+    let Some(mut capture) = capture.take() else {
         return;
     };
+    capture.history = capture.history.and_then(|proof| {
+        let output = terminal_response_output(&events[terminal_index])?;
+        let wire = events[terminal_index].wire_event()?;
+        if wire.event_type() != Some("response.completed") {
+            return None;
+        }
+        proof.completed(output)
+    });
     let Ok(update) = encode_openai_session_capture(&capture) else {
         return;
     };
@@ -790,7 +806,7 @@ pub(super) fn cold_response_stream(response: ColdResponse) -> EventStream {
         client,
         installation_id,
         response_origin,
-        request,
+        mut request,
         upstream_model,
         transport_policy,
         context,
@@ -805,6 +821,10 @@ pub(super) fn cold_response_stream(response: ColdResponse) -> EventStream {
         websocket_retry_count,
         stream_max_retries,
         ws_opening_recovery,
+        ws_response_recovery,
+        full_history_verified,
+        response_recovery_slots,
+        rejected_ciphertexts,
         mut session_capture,
     } = response;
     Box::pin(async_stream::try_stream! {
@@ -820,6 +840,16 @@ pub(super) fn cold_response_stream(response: ColdResponse) -> EventStream {
             upstream_model: Some(&upstream_model),
         };
         let mut active_account = lease.account().clone();
+        let encrypted = if ws_response_recovery.encrypted_history {
+            response_recovery_slots.try_acquire().ok().and_then(|_permit| {
+                encrypted_history::Attempt::prepare(&request, &active_account, session_transport_key.as_ref(), rejected_ciphertexts)
+            })
+        } else { None };
+        let precleaned = encrypted.as_ref().map_or(0, |attempt| attempt.preclean(&mut request));
+        if precleaned > 0 {
+            if let Some(capture) = session_capture.as_mut() { capture.history = None; capture.turn_state = None; }
+            context.trace().record("transport.encrypted_history.preclean", json!({"items":precleaned}));
+        }
         let cookie_header = build_cookie_header(lease.cookies())?;
         let authorization = lease
             .authentication()
@@ -840,7 +870,10 @@ pub(super) fn cold_response_stream(response: ColdResponse) -> EventStream {
         let request_transport_requirement = transport_requirement(&request);
         let trace = context.trace();
         let mut opening_recovery_used = false;
-        let response = create_response_attempt(
+        let mut history_replayed = false;
+        let mut payload_replayed = false;
+        let mut repaired_request = None;
+        let response = response_recovery::create(
             &client,
             &request,
             codex_request_context(
@@ -854,12 +887,31 @@ pub(super) fn cold_response_stream(response: ColdResponse) -> EventStream {
             ).with_trace(&trace).with_response_control(context.response_control()),
             active_account.id().as_str(),
             context.deadline(),
+            context.connection_budget(),
             &cancellation,
             (ws_opening_recovery, &mut opening_recovery_used),
+            ws_response_recovery,
+            full_history_verified && precleaned == 0,
+            &selector,
+            &quota,
+            &active_account,
+            response_recovery_slots,
+            &mut history_replayed,
+            &mut payload_replayed,
+            encrypted.as_ref(),
+            &mut repaired_request,
         )
         .await;
-        // opening 恢复已独占本轮预算，终态不再进入 Core 换号或其他传输恢复
+        if let Some(repaired) = repaired_request {
+            request = repaired;
+            if let Some(capture) = session_capture.as_mut() { capture.history = None; capture.turn_state = None; }
+        }
+        if history_replayed && let Some(capture)=session_capture.as_mut() {
+            capture.turn_state=None;
+        }
+        // 任一原生恢复独占本轮预算，终态不再进入 Core 换号或其他传输恢复
         let finish_error = |error: ProviderError| {
+            let error = if payload_replayed {error.with_prior_payload_sent()} else {error};
             if opening_recovery_used { error.with_retry_prohibited() } else { error }
         };
         let websocket_failure_policy = match &response {
@@ -1126,6 +1178,10 @@ pub(super) fn cold_response_stream(response: ColdResponse) -> EventStream {
             let first_event_changed =
                 observation_state.observe_stream_chunk(&chunk, context.timing_started_at());
             let decoded = if websocket_transport {
+                if let Some(attempt) = encrypted.as_ref()
+                    && attempt.observe(&request, &chunk).is_some() {
+                    trace.record("transport.encrypted_history.rejected", json!({"currentErrorPreserved":true}));
+                }
                 let text = std::str::from_utf8(&chunk).map_err(|_| provider_error(ProviderErrorKind::Protocol, UpstreamSendState::Sent))?;
                 decoder.push_websocket(text)
             } else {

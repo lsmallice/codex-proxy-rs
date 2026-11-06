@@ -44,6 +44,8 @@ async fn api_should_serve_resolved_assets_with_relative_environment_override() {
         return;
     };
     let mut config = gateway_api::ApiConfig {
+        responses_policy_source: None,
+        responses_compatibility: Default::default(),
         asset_directory: "unused".into(),
         cors_allowed_origins: Vec::new(),
         request_timeout_seconds: None,

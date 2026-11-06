@@ -96,13 +96,13 @@ impl RpcSession {
         lifecycle: Option<RpcSessionLifecycle>,
     ) -> Result<Self, RpcError> {
         if limits.maximum_calls == 0
-            || limits.maximum_calls > 256
+            || limits.maximum_calls > 1024
             || limits.maximum_executing_calls == 0
-            || limits.maximum_executing_calls > 256
-            || limits.maximum_queued_calls > 256
+            || limits.maximum_executing_calls > 1024
+            || limits.maximum_queued_calls > 1024
             || limits.maximum_queue_timeout.is_zero()
             || limits.maximum_callbacks == 0
-            || limits.maximum_callbacks > 512
+            || limits.maximum_callbacks > 4096
             || limits.maximum_buffered_body_bytes < 1024
             || limits.maximum_buffered_body_bytes > 16 * 1024 * 1024
             || limits.handshake_timeout.is_zero()
@@ -130,11 +130,23 @@ impl RpcSession {
         }
         let deadline = tokio::time::Instant::now() + limits.handshake_timeout;
         let process = loop {
-            match processes.spawn(ProcessSpec {
-                executable: package.executable().to_owned(),
-                directory: package.directory().to_owned(),
-                maximum_stderr_bytes: limits.maximum_stderr_bytes,
-            }) {
+            match processes.spawn_with_environment(
+                ProcessSpec {
+                    executable: package.executable().to_owned(),
+                    directory: package.directory().to_owned(),
+                    maximum_stderr_bytes: limits.maximum_stderr_bytes,
+                },
+                &[
+                    (
+                        "CPR_PLUGIN_MAXIMUM_CALLS".into(),
+                        limits.maximum_calls.to_string(),
+                    ),
+                    (
+                        "CPR_PLUGIN_MAXIMUM_CALLBACKS".into(),
+                        limits.maximum_callbacks.to_string(),
+                    ),
+                ],
+            ) {
                 Ok(process) => break process,
                 Err(
                     error @ ProcessStartError::Spawn {

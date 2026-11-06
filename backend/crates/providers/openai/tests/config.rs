@@ -136,6 +136,111 @@ fn valid_config() -> OpenAiConfig {
 }
 
 #[test]
+fn websocket_response_recovery_is_bounded_and_opt_in() {
+    let config: OpenAiConfig = serde_json::from_str("{}").unwrap();
+    assert!(!config.ws_response_recovery.enabled);
+    assert!(!config.ws_response_recovery.full_history);
+    assert_eq!(config.ws_response_recovery.max_retries, 1);
+    for (retries, valid) in [
+        (0, true),
+        (1, true),
+        (3, true),
+        (5, true),
+        (6, false),
+        (u32::MAX, false),
+    ] {
+        let mut config: OpenAiConfig = serde_json::from_value(
+            serde_json::json!({"ws_response_recovery":{"max_retries":retries}}),
+        )
+        .unwrap();
+        assert_eq!(
+            config
+                .resolve_and_validate(Path::new("/srv/gateway"))
+                .is_ok(),
+            valid
+        );
+    }
+    for retries in [
+        serde_json::json!(-1),
+        serde_json::json!(1.5),
+        serde_json::json!("2"),
+    ] {
+        assert!(
+            serde_json::from_value::<OpenAiConfig>(
+                serde_json::json!({"ws_response_recovery":{"max_retries":retries}})
+            )
+            .is_err()
+        );
+    }
+    for (window, bytes, valid) in [
+        (1, 1024, true),
+        (5000, 65536, true),
+        (10000, 262144, true),
+        (0, 1024, false),
+        (10001, 1024, false),
+        (5000, 262145, false),
+    ] {
+        let mut config:OpenAiConfig=serde_json::from_value(serde_json::json!({"ws_response_recovery":{"enabled":true,"full_history":true,"window_ms":window,"max_prefix_bytes":bytes}})).unwrap();
+        assert_eq!(
+            config
+                .resolve_and_validate(Path::new("/srv/gateway"))
+                .is_ok(),
+            valid
+        );
+    }
+    for (codes, valid) in [
+        (vec![1000, 1001, 1011, 1012, 1013], true),
+        (vec![], true),
+        (vec![1008], false),
+        (vec![1009], false),
+        (vec![1006], false),
+    ] {
+        let mut config: OpenAiConfig = serde_json::from_value(
+            serde_json::json!({"ws_response_recovery":{"close_codes":codes}}),
+        )
+        .unwrap();
+        assert_eq!(
+            config
+                .resolve_and_validate(Path::new("/srv/gateway"))
+                .is_ok(),
+            valid
+        );
+    }
+}
+
+#[test]
+fn model_unsupported_cooldown_accepts_zero_and_bounded_seconds() {
+    let config: OpenAiConfig = serde_json::from_str("{}").unwrap();
+    assert_eq!(config.model_unsupported_cooldown_seconds, 1800);
+    assert_eq!(config, OpenAiConfig::default());
+    for seconds in [0, 1, 60, 1800, 86400, 86401, u64::MAX] {
+        let mut config: OpenAiConfig = serde_json::from_value(serde_json::json!({
+            "model_unsupported_cooldown_seconds":seconds
+        }))
+        .unwrap();
+        assert_eq!(
+            config
+                .resolve_and_validate(Path::new("/srv/gateway"))
+                .is_ok(),
+            seconds <= 86400,
+            "{seconds}",
+        );
+    }
+    for invalid in [
+        serde_json::json!(-1),
+        serde_json::json!(1.5),
+        serde_json::json!("0"),
+    ] {
+        assert!(
+            serde_json::from_value::<OpenAiConfig>(serde_json::json!({
+                "model_unsupported_cooldown_seconds":invalid
+            }))
+            .is_err()
+        );
+    }
+}
+
+#[test]
 fn opening_recovery_is_opt_in_and_rejects_unbounded_settings() {
     let config: OpenAiConfig = serde_json::from_str("{}").unwrap();
     assert!(!config.ws_opening_recovery.enabled);

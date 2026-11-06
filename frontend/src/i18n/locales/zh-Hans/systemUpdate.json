@@ -1,5 +1,34 @@
 {
   "systemUpdate": {
+    "sources": {
+      "current": "更新当前来源",
+      "preview": "切换发行来源",
+      "view": "更新视图",
+      "label": "发行来源",
+      "fork": "我们的二开",
+      "official": "官方原版",
+      "stage": "发布阶段",
+      "inspect": "查询并预检",
+      "readOnly": "仅查询和预检，不保存来源，不安装或重启",
+      "officialWarning": "切回官方后，二开冷却、重试及插件容量配置不再生效",
+      "loading": "正在查询发行和切换条件",
+      "configured": "当前配置来源",
+      "target": "查询来源",
+      "noRelease": "未找到发行",
+      "results": "切换预检结果",
+      "passed": "已满足",
+      "blocked": "阻止切换",
+      "pending": "尚未验证",
+      "checkSource": "来源配置",
+      "checkBuild": "构建资格",
+      "checkVersion": "版本规则",
+      "checkAssets": "发行资源",
+      "checkDatabase": "数据库兼容性",
+      "checkPlugins": "插件兼容性",
+      "checkDeployment": "部署持久化",
+      "checkSwitch": "实际换版",
+      "close": "关闭"
+    },
     "channels": {
       "stable": {
         "label": "Stable · 正式",

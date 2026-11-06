@@ -38,6 +38,13 @@ pub struct UpdateDetailQuery {
     channel: Option<SystemUpdateChannel>,
 }
 
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct SourcePreviewQuery {
+    source: gateway_admin::model::system::SystemReleaseSource,
+    channel: SystemUpdateChannel,
+}
+
 impl UpdateDetailQuery {
     #[must_use]
     pub const fn channel(&self) -> Option<SystemUpdateChannel> {
@@ -244,6 +251,10 @@ where
         .route("/api/admin/system/version", get(version::<S>))
         .route("/api/admin/system/update/detail", get(update_detail::<S>))
         .route(
+            "/api/admin/system/update/source-preview",
+            get(source_preview::<S>),
+        )
+        .route(
             "/api/admin/system/update/events",
             get(update_event_stream::<S>),
         )
@@ -290,6 +301,26 @@ where
     Ok(AdminResponse::new(
         StatusCode::OK,
         AdminEnvelope::ok(SystemUpdateDetailView::from(detail)),
+    ))
+}
+
+async fn source_preview<S>(
+    _auth: AdminAuth,
+    State(state): State<S>,
+    AdminQuery(query): AdminQuery<SourcePreviewQuery>,
+) -> Result<impl IntoResponse, AdminError>
+where
+    S: SessionState + Send + Sync,
+{
+    let result = state
+        .admin_services()
+        .system()
+        .source_preview(query.source, query.channel)
+        .await
+        .map_err(map_system_error)?;
+    Ok(AdminResponse::new(
+        StatusCode::OK,
+        AdminEnvelope::ok(result),
     ))
 }
 

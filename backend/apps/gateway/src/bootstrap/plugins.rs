@@ -87,6 +87,7 @@ pub(super) fn prepare_plugins(
     plugin_cache: std::path::PathBuf,
     version: &str,
     http: Arc<gateway_host::outbound::HttpClient>,
+    settings: gateway_plugin_runtime::PluginStartupConfig,
 ) -> Result<Arc<gateway_plugin_runtime::PluginRuntime>, BootstrapError> {
     Ok(Arc::new(
         gateway_plugin_runtime::PluginRuntime::new(
@@ -99,8 +100,9 @@ pub(super) fn prepare_plugins(
                     .parse()
                     .map_err(|_| ConfigError::InvalidField("host.version"))?,
                 package_limits: gateway_plugin_runtime::PackageLimits::default(),
-                rpc_limits: gateway_plugin_runtime::RpcLimits::default(),
+                rpc_limits: settings.rpc_limits(),
                 restart_circuit: Default::default(),
+                http_filters: settings.http_filters,
             },
             http,
             Arc::new(gateway_host::process::ProcessSupervisor::default()),

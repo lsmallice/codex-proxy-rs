@@ -3,6 +3,30 @@ import request from '../../request'
 
 export type SystemUpdateChannel = 'stable' | 'rc' | 'beta' | 'alpha' | 'exp'
 
+export type SystemReleaseSource = 'fork' | 'official'
+export interface SystemSourcePreview {
+  source: SystemReleaseSource
+  repository: string
+  configuredRepository: string | null
+  channel: SystemUpdateChannel
+  currentVersion: string
+  latestVersion: string | null
+  releaseUrl: string | null
+  notes: string | null
+  installationAllowed: boolean
+  checks: { id: string, status: 'passed' | 'blocked' | 'pending', message: string }[]
+}
+
+export function getSystemSourcePreview(source: SystemReleaseSource, channel: Exclude<SystemUpdateChannel, 'exp'>, options: RequestOptions = {}) {
+  return request<SystemSourcePreview>({
+    url: '/api/admin/system/update/source-preview',
+    method: 'GET',
+    params: { source, channel },
+    timeout: 35000,
+    ...options,
+  })
+}
+
 export interface SystemUpdatePolicy {
   channel: SystemUpdateChannel
   availableChannels: SystemUpdateChannel[]

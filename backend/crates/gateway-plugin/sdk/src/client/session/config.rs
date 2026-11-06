@@ -5,8 +5,8 @@ use std::time::Duration;
 use super::SessionError;
 
 const MAXIMUM_STREAM_CHUNK_BYTES: usize = 16 * 1024 * 1024;
-const MAXIMUM_CONCURRENCY: usize = 256;
-const MAXIMUM_CALLBACKS: usize = 512;
+const MAXIMUM_CONCURRENCY: usize = 1024;
+const MAXIMUM_CALLBACKS: usize = 4096;
 const MAXIMUM_BUFFERED_STREAM_CHUNKS: usize = 65_536;
 
 /// 插件侧会话的内存、并发与期限边界
@@ -26,12 +26,25 @@ impl Default for SessionConfig {
         Self {
             // 流分块还需匹配宿主授予的信用窗口
             maximum_stream_chunk_bytes: 1024 * 1024,
-            maximum_calls: 256,
-            maximum_callbacks: 320,
+            maximum_calls: host_capacity("CPR_PLUGIN_MAXIMUM_CALLS", 256, MAXIMUM_CONCURRENCY),
+            maximum_callbacks: host_capacity(
+                "CPR_PLUGIN_MAXIMUM_CALLBACKS",
+                320,
+                MAXIMUM_CALLBACKS,
+            ),
             maximum_buffered_stream_chunks: 1_024,
             handshake_timeout: Duration::from_secs(5),
         }
     }
+}
+
+// 旧宿主不传容量时保持默认值；无效环境值不扩大资源上限
+fn host_capacity(name: &str, default: usize, maximum: usize) -> usize {
+    std::env::var(name)
+        .ok()
+        .and_then(|value| value.parse().ok())
+        .filter(|value| (1..=maximum).contains(value))
+        .unwrap_or(default)
 }
 
 impl SessionConfig {

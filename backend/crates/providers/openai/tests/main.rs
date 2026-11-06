@@ -3,6 +3,7 @@
 mod admin;
 mod compat;
 mod config;
+mod config_fork;
 mod credential;
 mod jitter;
 mod provider;

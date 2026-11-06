@@ -24,6 +24,89 @@ fn plugin_request() -> core::Request {
 }
 
 #[tokio::test]
+async fn route_filter_bypasses_saturated_plugin_before_admission() {
+    let limits = RpcLimits {
+        maximum_calls: 1,
+        maximum_executing_calls: 1,
+        maximum_queued_calls: 0,
+        maximum_callbacks: 8,
+        ..Default::default()
+    };
+    let (cache, runtime, generation, plan) = http_plugin_with_filters(
+        serde_json::json!({"http":true,"mode":"passthrough"}),
+        limits,
+        PluginFailurePolicy::Reject,
+        BTreeMap::from([(
+            "http-plugin".into(),
+            vec![gateway_plugin_runtime::PluginHttpRoute {
+                method: "POST".into(),
+                path: "/v1/responses".into(),
+            }],
+        )]),
+    )
+    .await;
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    let blocked = tokio::spawn({
+        let plan = plan.clone();
+        async move {
+            plan.handle_http(
+                context(),
+                ::http::Request::builder()
+                    .method("POST")
+                    .uri("/v1/responses?stream=1")
+                    .header("authorization", "Bearer fixture-secret")
+                    .body(core::empty_body())
+                    .unwrap(),
+                compose(Vec::new(), move |_: core::Request| {
+                    Box::pin(async move {
+                        tx.send(()).unwrap();
+                        futures::future::pending().await
+                    })
+                }),
+            )
+            .await
+        }
+    });
+    tokio::time::timeout(Duration::from_secs(5), rx)
+        .await
+        .unwrap()
+        .unwrap();
+    for (method, path, allowed) in [
+        ("GET", "/api/admin/accounts", true),
+        ("GET", "/healthz", true),
+        ("GET", "/v1/responses", true),
+        ("POST", "/v1/responses/compact", true),
+        ("POST", "/v1/responses", false),
+    ] {
+        let expected = path.to_owned();
+        let result = plan
+            .handle_http(
+                context(),
+                ::http::Request::builder()
+                    .method(method)
+                    .uri(path)
+                    .body(core::empty_body())
+                    .unwrap(),
+                compose(Vec::new(), move |request: core::Request| {
+                    Box::pin(async move {
+                        assert!(allowed);
+                        assert_eq!(request.uri().path(), expected);
+                        Ok(core::Response::new(core::empty_body()))
+                    })
+                }),
+            )
+            .await;
+        assert_eq!(result.is_ok(), allowed, "{method} {path}");
+    }
+    blocked.abort();
+    let _ = blocked.await;
+    drop(plan);
+    drop(generation);
+    runtime.shutdown().await;
+    drop(cache);
+}
+
+#[tokio::test]
 async fn http_waiting_next_releases_execution_for_delegate_plugin() {
     assert_capacity(PluginFailurePolicy::Delegate, RpcLimits::default(), false).await;
 }
@@ -48,14 +131,32 @@ async fn http_in_flight_limit_never_delegates_and_recovers_after_cancellation() 
     }
 }
 
+#[tokio::test]
+async fn configured_512_calls_reaches_new_bound_and_releases_after_cancellation() {
+    assert_capacity(
+        PluginFailurePolicy::Reject,
+        RpcLimits {
+            maximum_calls: 512,
+            maximum_callbacks: 1024,
+            ..Default::default()
+        },
+        true,
+    )
+    .await;
+}
+
 async fn assert_capacity(policy: PluginFailurePolicy, limits: RpcLimits, saturated: bool) {
-    const CONCURRENT_CALLS: usize = 64;
+    let concurrent_calls = if limits.maximum_calls > 256 {
+        limits.maximum_calls
+    } else {
+        64
+    };
     let (cache, runtime, generation, plan) =
         http_plugin_with_policy("passthrough", limits, policy).await;
     let release = Arc::new(tokio::sync::Semaphore::new(0));
     let (started, mut entered) = tokio::sync::mpsc::unbounded_channel();
     let mut slow_calls = tokio::task::JoinSet::new();
-    for index in 0..CONCURRENT_CALLS {
+    for index in 0..concurrent_calls {
         let plan = plan.clone();
         let release = release.clone();
         let started = started.clone();
@@ -120,7 +221,7 @@ async fn assert_capacity(policy: PluginFailurePolicy, limits: RpcLimits, saturat
             assert!(matches!(result, Err(error) if error.is_cancelled()));
         }
     }
-    release.add_permits(CONCURRENT_CALLS);
+    release.add_permits(concurrent_calls);
     while let Some(result) = slow_calls.join_next().await {
         let response = result.unwrap().unwrap();
         assert_eq!(response.headers()["x-http-plugin"], "active");

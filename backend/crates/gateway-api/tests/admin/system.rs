@@ -134,6 +134,64 @@ fn app(state: AdminTestState) -> Router {
 }
 
 #[tokio::test]
+async fn source_preview_requires_admin_and_only_accepts_fixed_sources_without_changing_install_contract()
+ {
+    let fixture = AdminTestFixture::with_system(Arc::new(ProgressSystem::default())).await;
+    let router = app(fixture.state());
+    let request = |query: &str| {
+        Request::builder()
+            .uri(format!("/api/admin/system/update/source-preview?{query}"))
+            .header(header::COOKIE, "cpr_session=valid-session")
+            .header("x-request-id", "req_source_preview")
+            .body(Body::empty())
+            .unwrap()
+    };
+    assert_eq!(
+        router
+            .clone()
+            .oneshot(request("source=official&channel=stable"))
+            .await
+            .unwrap()
+            .status(),
+        StatusCode::UNAUTHORIZED
+    );
+    fixture.auth.insert_session("valid-session");
+    for source in ["official", "fork"] {
+        let response = router
+            .clone()
+            .oneshot(request(&format!("source={source}&channel=rc")))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let json: serde_json::Value =
+            serde_json::from_slice(&to_bytes(response.into_body(), 65536).await.unwrap()).unwrap();
+        assert_eq!(json["data"]["source"], source);
+        assert_eq!(json["data"]["channel"], "rc");
+        assert_eq!(json["data"]["installationAllowed"], false);
+    }
+    for query in [
+        "source=https://example.org&channel=stable",
+        "source=official&channel=unknown",
+        "source=official&channel=stable&repository=other/repo",
+        "channel=stable",
+    ] {
+        assert_eq!(
+            router
+                .clone()
+                .oneshot(request(query))
+                .await
+                .unwrap()
+                .status(),
+            StatusCode::BAD_REQUEST
+        );
+    }
+    assert!(
+        serde_json::from_str::<UpdateRequest>(r#"{"targetVersion":"1.2.0","source":"official"}"#)
+            .is_err()
+    );
+}
+
+#[tokio::test]
 async fn update_detail_should_compress_json_starting_at_one_kib() {
     async fn detail(notes: String, encoding: &str) -> axum::response::Response {
         let fixture =
@@ -185,6 +243,24 @@ struct ProgressSystem {
 
 #[async_trait]
 impl SystemOperations for ProgressSystem {
+    async fn source_preview(
+        &self,
+        source: gateway_admin::model::system::SystemReleaseSource,
+        channel: gateway_admin::model::system::SystemUpdateChannel,
+    ) -> Result<gateway_admin::model::system::SystemSourcePreview, SystemOperationError> {
+        Ok(gateway_admin::model::system::SystemSourcePreview {
+            source,
+            channel,
+            repository: "fixture/repository".into(),
+            configured_repository: None,
+            current_version: "1.0.0".into(),
+            latest_version: None,
+            release_url: None,
+            notes: None,
+            installation_allowed: false,
+            checks: vec![],
+        })
+    }
     async fn version(&self) -> Result<SystemVersion, SystemOperationError> {
         Err(unavailable_system())
     }

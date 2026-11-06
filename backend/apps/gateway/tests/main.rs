@@ -22,6 +22,7 @@ fn app_tree_matches_frozen_terminal_manifest() {
         BTreeSet::from([
             PathBuf::from("bootstrap/command.rs"),
             PathBuf::from("bootstrap/config.rs"),
+            PathBuf::from("bootstrap/fork_settings.rs"),
             PathBuf::from("bootstrap/mod.rs"),
             PathBuf::from("bootstrap/plugins.rs"),
             PathBuf::from("bootstrap/server.rs"),

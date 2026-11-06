@@ -164,6 +164,7 @@ async fn initialize_inner(
     public_services.register_accounts(&accounts)?;
     public_services.register_usage_data(&usage_data)?;
     let services = AdminServices {
+        fork_settings: None,
         peer_link: Arc::new(use_case::peer_link::DefaultPeerLinkService::new(
             store.client_keys(),
             store.accounts(),

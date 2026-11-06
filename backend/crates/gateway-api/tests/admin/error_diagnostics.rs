@@ -15,6 +15,8 @@ async fn store_failure_is_recorded_once_with_the_incoming_request_id() {
     let bundle = crate::openai::api_bundle_with_diagnostics(
         fixture.services,
         gateway_api::ApiConfig {
+            responses_policy_source: None,
+            responses_compatibility: Default::default(),
             asset_directory: std::env::temp_dir(),
             request_timeout_seconds: None,
             cors_allowed_origins: Vec::new(),

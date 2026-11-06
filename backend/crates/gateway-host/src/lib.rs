@@ -3,6 +3,7 @@
 pub mod client_distribution;
 mod command_line;
 pub mod config;
+pub mod fork_settings;
 mod logging;
 pub mod official_plugins;
 pub mod outbound;

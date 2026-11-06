@@ -36,6 +36,8 @@ pub struct CodexResponsesRequest {
     body: Map<String, Value>,
     /// API 边界保存、Provider 逐条恢复的普通客户端请求头
     pub(crate) passthrough_headers: HeaderMap,
+    /// Lite 补正等待实际传输和逐帧投影确定后执行，不写入 wire
+    pub(crate) lite_context_compat: bool,
     /// 是否由客户端显式提供了 prompt cache key
     pub explicit_prompt_cache_key: bool,
     /// 客户端会话 ID
@@ -594,6 +596,7 @@ impl CodexResponsesRequest {
         Self {
             body,
             passthrough_headers: HeaderMap::new(),
+            lite_context_compat: false,
             explicit_prompt_cache_key: false,
             client_conversation_id: None,
             client_session_id: None,

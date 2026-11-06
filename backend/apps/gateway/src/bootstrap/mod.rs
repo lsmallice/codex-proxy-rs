@@ -2,6 +2,7 @@
 
 mod command;
 mod config;
+mod fork_settings;
 mod plugins;
 mod server;
 mod startup;

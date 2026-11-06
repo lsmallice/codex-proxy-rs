@@ -6,6 +6,7 @@ import type { AccountErrorProtection } from './protection'
 import request from '../../request'
 
 export * from './backups'
+export * from './fork'
 export * from './pricing'
 export * from './privacy'
 export * from './protection'

@@ -294,6 +294,8 @@ async fn router(mode: Mode, timeout: Option<u64>) -> (axum::Router, Arc<Plan>) {
     let router = crate::openai::api_bundle(
         admin.services,
         gateway_api::ApiConfig {
+            responses_policy_source: None,
+            responses_compatibility: Default::default(),
             asset_directory: std::env::temp_dir(),
             cors_allowed_origins: Vec::new(),
             request_timeout_seconds: timeout,
@@ -514,6 +516,8 @@ async fn internal_dispatch_uses_the_same_router_and_the_frozen_parent_context() 
     let bundle = crate::openai::api_bundle(
         admin.services,
         gateway_api::ApiConfig {
+            responses_policy_source: None,
+            responses_compatibility: Default::default(),
             asset_directory: std::env::temp_dir(),
             cors_allowed_origins: Vec::new(),
             request_timeout_seconds: Some(60),
@@ -579,6 +583,8 @@ async fn parent_cancellation_wakes_a_pending_child_response_body() {
     let bundle = crate::openai::api_bundle(
         admin.services,
         gateway_api::ApiConfig {
+            responses_policy_source: None,
+            responses_compatibility: Default::default(),
             asset_directory: std::env::temp_dir(),
             cors_allowed_origins: Vec::new(),
             request_timeout_seconds: None,
@@ -626,6 +632,8 @@ async fn plugin_http_dispatch_uses_host_identity_without_client_credentials() {
     let bundle = crate::openai::api_bundle(
         admin.services,
         gateway_api::ApiConfig {
+            responses_policy_source: None,
+            responses_compatibility: Default::default(),
             asset_directory: std::env::temp_dir(),
             cors_allowed_origins: Vec::new(),
             request_timeout_seconds: None,

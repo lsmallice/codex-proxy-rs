@@ -3,6 +3,8 @@
 mod admin;
 mod compat;
 pub mod config;
+mod config_fork;
+pub use config_fork::{OpenAiForkRuntime, OpenAiForkSettings};
 mod jitter;
 mod provider;
 mod request_identity;
@@ -179,6 +181,7 @@ pub async fn initialize(
             ports.cooldowns(),
             Arc::clone(&account_feedback),
             CodexCookiePolicy::official().map_err(|_| OpenAiInitializeError::CookiePolicy)?,
+            std::time::Duration::from_secs(config.model_unsupported_cooldown_seconds),
         )
         .with_upstream_info(upstream_info),
     );
@@ -196,6 +199,9 @@ pub async fn initialize(
         )
         .map_err(OpenAiInitializeError::Provider)?
         .with_ws_opening_recovery(config.ws_opening_recovery)
+        .with_ws_response_recovery(config.ws_response_recovery.clone())
+        .with_request_compatibility(config.request_compatibility)
+        .with_fork_runtime(config.fork_runtime.clone())
         .with_session_identity(session_identity)
         .with_timezone(config.timezone)
         .with_live_support(repository.clone()),

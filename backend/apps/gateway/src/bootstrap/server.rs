@@ -11,6 +11,28 @@ use super::{
 /// 按冻结顺序初始化全部 Bundle，并把进程阻塞权交给 Host
 pub async fn run() -> Result<(), BootstrapError> {
     let config = gateway_host::load_config::<GatewayConfig>()?;
+    let mut api_config = config.api;
+    api_config.responses_policy_source = config.openai.fork_runtime.clone().map(|runtime| {
+        gateway_api::openai::responses::ResponsesPolicySource::new(move |operation| {
+            let snapshot = runtime.snapshot();
+            let ingress = gateway_api::openai::responses::ResponsesIngressCompatibility {
+                min_output_tokens_16: snapshot.request_compatibility.min_output_tokens_16,
+                tool_structure: snapshot.request_compatibility.tool_structure,
+            };
+            let operation = snapshot.freeze_operation(operation).map_err(|_| {
+                gateway_core::error::GatewayError::new(
+                    gateway_core::error::GatewayErrorKind::Internal,
+                    "Request policy snapshot could not be prepared.",
+                )
+            })?;
+            Ok((operation, ingress))
+        })
+    });
+    api_config.responses_compatibility =
+        gateway_api::openai::responses::ResponsesIngressCompatibility {
+            min_output_tokens_16: config.openai.request_compatibility.min_output_tokens_16,
+            tool_structure: config.openai.request_compatibility.tool_structure,
+        };
     let environment = Environment::initialize(config.host, config.store, Mode::Server).await?;
     let mut providers = Providers::initialize(config.openai, &environment).await?;
     let Environment {
@@ -21,7 +43,13 @@ pub async fn run() -> Result<(), BootstrapError> {
         version,
         plugin_http,
     } = environment;
-    let plugin_runtime = prepare_plugins(&store, plugin_cache, &version, plugin_http.clone())?;
+    let plugin_runtime = prepare_plugins(
+        &store,
+        plugin_cache,
+        &version,
+        plugin_http.clone(),
+        config.plugins,
+    )?;
     let core = gateway_core::prepare(
         store.core_ports(),
         providers.core,
@@ -131,9 +159,12 @@ pub async fn run() -> Result<(), BootstrapError> {
     let api = or_shutdown!(
         plugin_runtime,
         gateway_api::initialize(
-            config.api,
+            api_config,
             core.execution_service(),
-            admin.services(),
+            match config.fork_settings {
+                Some(settings) => admin.services().with_fork_settings(settings),
+                None => admin.services(),
+            },
             probes,
             host.worker_health(),
             host.connection_lifecycle(),

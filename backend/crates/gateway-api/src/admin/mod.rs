@@ -19,6 +19,7 @@ pub mod client_keys;
 mod compression;
 pub(crate) mod diagnostics;
 mod extract;
+mod fork_settings;
 pub mod observability;
 mod plugins;
 pub mod presenter;
@@ -52,6 +53,7 @@ where
         .merge(client_keys::router::<S>())
         .merge(observability::router::<S>())
         .merge(settings::router::<S>())
+        .merge(fork_settings::router::<S>())
         .merge(system::router::<S>())
         .method_not_allowed_fallback(method_not_allowed)
         .route("/api/admin", any(admin_not_found))

@@ -482,6 +482,8 @@ async fn http_settings_freeze_before_plan_resolution_and_apply_before_admission(
     let admin = crate::admin::AdminTestFixture::new().await;
     let bundle = gateway_api::initialize(
         gateway_api::ApiConfig {
+            responses_policy_source: None,
+            responses_compatibility: Default::default(),
             asset_directory: std::env::temp_dir(),
             cors_allowed_origins: vec![],
             request_timeout_seconds: None,

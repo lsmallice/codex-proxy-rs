@@ -138,6 +138,15 @@ async fn setup_package_with_limits(
     package: Arc<[u8]>,
     rpc_limits: RpcLimits,
 ) -> (tempfile::TempDir, PluginRuntime) {
+    setup_package_with_http_filters(instances, package, rpc_limits, BTreeMap::new()).await
+}
+
+async fn setup_package_with_http_filters(
+    instances: Vec<InstanceFixture>,
+    package: Arc<[u8]>,
+    rpc_limits: RpcLimits,
+    http_filters: BTreeMap<String, Vec<gateway_plugin_runtime::PluginHttpRoute>>,
+) -> (tempfile::TempDir, PluginRuntime) {
     let cache = tempfile::tempdir().unwrap();
     let artifact = PackageInspector::new(PackageLimits::default(), "1.0.0".parse().unwrap())
         .inspect(package, None)
@@ -175,6 +184,7 @@ async fn setup_package_with_limits(
             package_limits: PackageLimits::default(),
             rpc_limits,
             restart_circuit: Default::default(),
+            http_filters,
         },
         Arc::new(gateway_host::outbound::HttpClient::new().unwrap()),
         Arc::new(gateway_host::process::ProcessSupervisor::new(

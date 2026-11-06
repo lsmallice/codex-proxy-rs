@@ -29,23 +29,25 @@ pub async fn plugin_command(
     let config = gateway_host::load_config::<GatewayConfig>()?;
     if command.is_help() {
         let environment = Environment::initialize(config.host, config.store, Mode::Help).await?;
-        help(command, environment).await
+        help(command, environment, config.plugins).await
     } else {
         let environment = Environment::initialize(config.host, config.store, Mode::Command).await?;
         let providers = Providers::initialize(config.openai, &environment).await?;
-        execute(command, environment, providers).await
+        execute(command, environment, providers, config.plugins).await
     }
 }
 
 async fn help(
     command: PluginCommand,
     environment: Environment,
+    settings: gateway_plugin_runtime::PluginStartupConfig,
 ) -> Result<gateway_plugin_runtime::PluginCommandOutput, BootstrapError> {
     let runtime = prepare_plugins(
         &environment.store,
         environment.plugin_cache,
         &environment.version,
         environment.plugin_http,
+        settings,
     )?;
     let commands = or_shutdown!(runtime, runtime.prepare_command_line().await);
     let stdout = commands.help(command.instance_id.as_deref(), command.name.as_deref());
@@ -63,6 +65,7 @@ async fn execute(
     command: PluginCommand,
     environment: Environment,
     providers: Providers,
+    settings: gateway_plugin_runtime::PluginStartupConfig,
 ) -> Result<gateway_plugin_runtime::PluginCommandOutput, BootstrapError> {
     let Environment {
         host,
@@ -73,7 +76,7 @@ async fn execute(
         plugin_http,
         ..
     } = environment;
-    let plugin_runtime = prepare_plugins(&store, plugin_cache, &version, plugin_http)?;
+    let plugin_runtime = prepare_plugins(&store, plugin_cache, &version, plugin_http, settings)?;
     let instance_id = or_shutdown!(
         plugin_runtime,
         command

@@ -26,10 +26,22 @@ import {
   resolveSystemUpdateLogClasses,
   resolveSystemUpdatePresentation,
 } from './presenter'
+import SourcePreview from './SourcePreview.vue'
 
 const { t } = useI18n({ useScope: 'global' })
 
 const open = defineModel<boolean>({ default: false })
+const updateView = shallowRef('installed')
+const viewOptions = computed(() => [
+  {
+    label: t('systemUpdate.sources.current'),
+    value: 'installed',
+  },
+  {
+    label: t('systemUpdate.sources.preview'),
+    value: 'sources',
+  },
+])
 
 const systemUpdateStore = useSystemUpdateStore()
 const {
@@ -295,7 +307,9 @@ watch(
       <ArrowUpCircle class="size-4.5 text-z-success" />
     </template>
 
-    <div class="grid gap-3.5">
+    <ZSegmented v-model="updateView" :options="viewOptions" :aria-label="t('systemUpdate.sources.view')" :disabled="updating || restarting || preparingUpdate || updateConfirmOpen || checkingRestart || restartConfirmOpen" class="mb-4" />
+    <SourcePreview v-if="open && updateView === 'sources'" />
+    <div v-show="updateView === 'installed'" class="grid gap-3.5">
       <section class="grid gap-4 rounded-z-card bg-z-fill-quaternary px-4 py-4">
         <div class="flex flex-wrap items-center justify-between gap-3">
           <div class="min-w-0">
@@ -468,70 +482,75 @@ watch(
     </div>
 
     <template #footer>
-      <div class="mr-auto flex min-w-0 basis-full items-center gap-2 sm:basis-auto">
-        <ZSkeleton v-if="loading" class="h-8 w-52" :aria-label="t('systemUpdate.channels.loading')" />
-        <ZSegmented
-          v-else
-          :model-value="selectedChannel"
-          :options="channelOptions"
-          :aria-label="t('systemUpdate.channels.label')"
-          size="small"
-          :disabled="!canChangeChannel || preparingUpdate || updateConfirmOpen"
-          @update:model-value="handleChannelChange"
-        />
-        <ZPopover placement="top-start">
-          <template #reference>
-            <ZButton variant="link" size="small" square :aria-label="t('systemUpdate.channels.help')">
-              <CircleHelp class="size-4" />
-            </ZButton>
+      <template v-if="updateView === 'installed'">
+        <div class="mr-auto flex min-w-0 basis-full items-center gap-2 sm:basis-auto">
+          <ZSkeleton v-if="loading" class="h-8 w-52" :aria-label="t('systemUpdate.channels.loading')" />
+          <ZSegmented
+            v-else
+            :model-value="selectedChannel"
+            :options="channelOptions"
+            :aria-label="t('systemUpdate.channels.label')"
+            size="small"
+            :disabled="!canChangeChannel || preparingUpdate || updateConfirmOpen"
+            @update:model-value="handleChannelChange"
+          />
+          <ZPopover placement="top-start">
+            <template #reference>
+              <ZButton variant="link" size="small" square :aria-label="t('systemUpdate.channels.help')">
+                <CircleHelp class="size-4" />
+              </ZButton>
+            </template>
+            <div class="grid w-72 gap-2 p-3 text-z-sm text-z-text-secondary">
+              <p v-for="channel in availableChannels" :key="channel" class="m-0">
+                <strong class="font-heavy text-z-text">{{ channelLabels[channel].label }}</strong>
+                · {{ channelLabels[channel].description }}
+              </p>
+              <p class="m-0 text-z-text-quaternary">
+                {{ t('systemUpdate.channels.description') }}
+              </p>
+            </div>
+          </ZPopover>
+        </div>
+        <ZButton
+          :loading="checking"
+          :disabled="loading || updating || restarting || changingChannel || preparingUpdate"
+          @click="handleCheckUpdates(true)"
+        >
+          <template #loading>
+            <RefreshCw class="size-3.5 animate-spin motion-reduce:animate-none" />
           </template>
-          <div class="grid w-72 gap-2 p-3 text-z-sm text-z-text-secondary">
-            <p v-for="channel in availableChannels" :key="channel" class="m-0">
-              <strong class="font-heavy text-z-text">{{ channelLabels[channel].label }}</strong>
-              · {{ channelLabels[channel].description }}
-            </p>
-            <p class="m-0 text-z-text-quaternary">
-              {{ t('systemUpdate.channels.description') }}
-            </p>
-          </div>
-        </ZPopover>
-      </div>
-      <ZButton
-        :loading="checking"
-        :disabled="loading || updating || restarting || changingChannel || preparingUpdate"
-        @click="handleCheckUpdates(true)"
-      >
-        <template #loading>
-          <RefreshCw class="size-3.5 animate-spin motion-reduce:animate-none" />
-        </template>
-        <template #icon>
-          <RefreshCw class="size-3.5" />
-        </template>
-        {{ t('systemUpdate.actions.check') }}
-      </ZButton>
-      <ZButton
-        v-if="needRestart"
-        type="primary"
-        :loading="restarting || checkingRestart"
-        :disabled="loading || updating || restartConfirmOpen"
-        @click="handleRestart"
-      >
-        <template #icon>
-          <Power class="size-4" />
-        </template>
-        {{ presentation.restartButtonLabel }}
-      </ZButton>
-      <ZButton
-        v-else-if="hasUpdate || updating"
-        type="primary"
-        :loading="preparingUpdate || updating"
-        :disabled="!canUpdate || preparingUpdate"
-        @click="handleUpdateRequest"
-      >
-        <template #icon>
-          <Download class="size-4" />
-        </template>
-        {{ updating ? t('systemUpdate.status.updating') : t('systemUpdate.actions.install') }}
+          <template #icon>
+            <RefreshCw class="size-3.5" />
+          </template>
+          {{ t('systemUpdate.actions.check') }}
+        </ZButton>
+        <ZButton
+          v-if="needRestart"
+          type="primary"
+          :loading="restarting || checkingRestart"
+          :disabled="loading || updating || restartConfirmOpen"
+          @click="handleRestart"
+        >
+          <template #icon>
+            <Power class="size-4" />
+          </template>
+          {{ presentation.restartButtonLabel }}
+        </ZButton>
+        <ZButton
+          v-else-if="hasUpdate || updating"
+          type="primary"
+          :loading="preparingUpdate || updating"
+          :disabled="!canUpdate || preparingUpdate"
+          @click="handleUpdateRequest"
+        >
+          <template #icon>
+            <Download class="size-4" />
+          </template>
+          {{ updating ? t('systemUpdate.status.updating') : t('systemUpdate.actions.install') }}
+        </ZButton>
+      </template>
+      <ZButton v-else @click="open = false">
+        {{ t('systemUpdate.sources.close') }}
       </ZButton>
     </template>
   </ZDialog>

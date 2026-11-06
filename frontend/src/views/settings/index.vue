@@ -13,6 +13,7 @@ import SettingsBackupSection from './components/backup/SettingsBackupSection.vue
 import ClientProfileCard from './components/ClientProfileCard.vue'
 import ConcurrencyPolicyCard from './components/ConcurrencyPolicyCard.vue'
 import AccountErrorProtectionCard from './components/error-protection/AccountErrorProtectionCard.vue'
+import SettingsForkSection from './components/fork/SettingsForkSection.vue'
 import ModelAliasesCard from './components/ModelAliasesCard.vue'
 import PrivacyPolicyCard from './components/privacy/PrivacyPolicyCard.vue'
 import RequestHistoryCard from './components/RequestHistoryCard.vue'
@@ -52,6 +53,10 @@ const sectionOptions = computed(() => ([
     label: t('settings.page.tabs.backups'),
     value: 'backup',
   },
+  {
+    label: t('forkSettings.title'),
+    value: 'fork',
+  },
 ]))
 const section = computed(() => {
   switch (route.name) {
@@ -59,12 +64,19 @@ const section = computed(() => {
     case 'settings-access': return 'access'
     case 'settings-pricing': return 'pricing'
     case 'settings-backup': return 'backup'
+    case 'settings-fork': return 'fork'
     default: return 'runtime'
   }
 })
-const isBasicSection = computed(() => section.value !== 'pricing' && section.value !== 'backup')
+const isBasicSection = computed(() => !['pricing', 'backup', 'fork'].includes(section.value))
 const visited = reactive(new Set<string>())
 const settingsVisited = shallowRef(false)
+const sectionTabs = useTemplateRef<HTMLElement>('sectionTabs')
+
+watch([section, sectionOptions], async () => {
+  await nextTick()
+  sectionTabs.value?.querySelector<HTMLElement>('[aria-checked="true"]')?.scrollIntoView({ block: 'nearest', inline: 'nearest' })
+}, { immediate: true, flush: 'post' })
 
 function switchSection(value = 'runtime') {
   return router.push(value === 'runtime'
@@ -134,7 +146,8 @@ function resetForm() {
   formRef.value?.clearValidate()
 }
 const backupSection = useTemplateRef<InstanceType<typeof SettingsBackupSection>>('backupSection')
-const hasUnsavedChanges = computed(() => hasChanges.value || !!backupSection.value?.hasChanges)
+const forkSection = useTemplateRef<InstanceType<typeof SettingsForkSection>>('forkSection')
+const hasUnsavedChanges = computed(() => hasChanges.value || !!backupSection.value?.hasChanges || !!forkSection.value?.hasChanges)
 const { showLeaveConfirm, confirmLeave } = useSettingsLeaveGuard(hasUnsavedChanges)
 
 watch(() => !loading.value && route.hash === '#reset-credits', async (ready) => {
@@ -157,7 +170,7 @@ watch(section, (value) => {
   <div class="w-full" :class="section === 'pricing' ? 'flex h-[calc(100dvh-2rem)] flex-none! flex-col min-[961px]:h-[calc(100dvh-3rem)]' : undefined">
     <ZPageHeader :title="t('navigation.settings')" :description="t('settings.page.description')" />
 
-    <div class="mt-4 flex min-h-z-control shrink-0 flex-wrap items-center justify-between gap-3">
+    <div ref="sectionTabs" class="mt-4 flex min-h-z-control shrink-0 flex-wrap items-center justify-between gap-3">
       <ZSegmented
         :model-value="section"
         :aria-label="t('settings.page.sectionsLabel')"
@@ -255,6 +268,7 @@ watch(section, (value) => {
 
     <SettingsBackupSection v-if="visited.has('backup')" v-show="section === 'backup'" ref="backupSection" class="mt-5" :active="section === 'backup'" />
     <PricingSection v-if="visited.has('pricing')" v-show="section === 'pricing'" class="mt-5 min-h-0 flex-1" />
+    <SettingsForkSection v-if="visited.has('fork')" v-show="section === 'fork'" ref="forkSection" class="mt-5" :active="section === 'fork'" />
     <ZConfirmDialog
       v-model="showLeaveConfirm"
       :title="t('settings.page.unsavedChanges.title')"

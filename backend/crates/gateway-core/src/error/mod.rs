@@ -538,6 +538,14 @@ impl ProviderError {
         }
     }
 
+    /// 同一次 attempt 内先前发送不能被后续建连失败覆盖为未发送
+    #[must_use]
+    pub const fn with_prior_payload_sent(mut self) -> Self {
+        self.send_state = UpstreamSendState::Sent;
+        self.replay_safe = false;
+        self
+    }
+
     /// 附加合法上游状态码
     #[must_use]
     pub fn with_status(mut self, status: u16) -> Self {

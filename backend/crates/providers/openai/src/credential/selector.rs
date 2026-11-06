@@ -54,8 +54,6 @@ const CYBER_POLICY_TIMEOUT: Duration = Duration::from_millis(100);
 const CYBER_POLICY_SESSION_TTL: Duration = Duration::from_secs(60 * 60);
 const MAX_ACCOUNT_SNAPSHOT_RETRIES: u32 = 3;
 const COOLDOWN_READ_CONCURRENCY: usize = 128;
-// 套餐权限可能变化，明确拒绝只作有界的账号模型排除，不冻结整个账号
-const MODEL_UNSUPPORTED_COOLDOWN: Duration = Duration::from_secs(30 * 60);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CodexAccountFailure {
@@ -130,9 +128,10 @@ pub(crate) struct CodexCyberPolicyScope {
     state: Option<ProviderSessionExclusions>,
 }
 
+#[derive(Clone)]
 pub struct CodexCredentialSelector {
-    waiting: ConcurrencyWaitQueue<ProviderAccountId>,
-    reserved_waiting: ConcurrencyWaitQueue<ProviderAccountId>,
+    waiting: Arc<ConcurrencyWaitQueue<ProviderAccountId>>,
+    reserved_waiting: Arc<ConcurrencyWaitQueue<ProviderAccountId>>,
     provider_kind: ProviderKind,
     repository: CodexCredentialRepository,
     leases: Arc<dyn ProviderLeasePort>,
@@ -141,9 +140,10 @@ pub struct CodexCredentialSelector {
     quota: Arc<CodexCredentialQuotaService>,
     catalog: Arc<CodexCredentialCatalogService>,
     cooldowns: Arc<dyn ProviderCooldownPort>,
+    model_unsupported_cooldown: Duration,
     upstream_info: Option<Arc<dyn gateway_core::account::UpstreamInfoSource>>,
     cookie_policy: CodexCookiePolicy,
-    risk_recovery: Mutex<HashMap<String, RiskRecoveryState>>,
+    risk_recovery: Arc<Mutex<HashMap<String, RiskRecoveryState>>>,
     account_feedback: Arc<AccountFeedbackStats>,
 }
 
@@ -283,6 +283,7 @@ impl CodexCredentialSelector {
         cooldowns: Arc<dyn ProviderCooldownPort>,
         account_feedback: Arc<AccountFeedbackStats>,
         cookie_policy: CodexCookiePolicy,
+        model_unsupported_cooldown: Duration,
     ) -> Self {
         Self {
             provider_kind,
@@ -293,13 +294,20 @@ impl CodexCredentialSelector {
             quota,
             catalog,
             cooldowns,
+            model_unsupported_cooldown,
             upstream_info: None,
             cookie_policy,
-            risk_recovery: Mutex::new(HashMap::new()),
-            waiting: ConcurrencyWaitQueue::default(),
-            reserved_waiting: ConcurrencyWaitQueue::default(),
+            risk_recovery: Arc::new(Mutex::new(HashMap::new())),
+            waiting: Arc::new(ConcurrencyWaitQueue::default()),
+            reserved_waiting: Arc::new(ConcurrencyWaitQueue::default()),
             account_feedback,
         }
+    }
+
+    pub(crate) fn with_model_unsupported_cooldown(&self, duration: Duration) -> Self {
+        let mut frozen = self.clone();
+        frozen.model_unsupported_cooldown = duration;
+        frozen
     }
 
     pub async fn select(
@@ -724,8 +732,11 @@ impl CodexCredentialSelector {
                 self.quota.prepare_scheduling(&accounts).await;
             }
             let mut rate_limits = HashMap::with_capacity(accounts.len());
+            // 关闭模型拒绝冷却时也忽略旧记录，账号级保护仍独立读取
             let model_scope = match model {
-                CodexSelectionModel::Requested(model) => {
+                CodexSelectionModel::Requested(model)
+                    if !self.model_unsupported_cooldown.is_zero() =>
+                {
                     gateway_core::routing::UpstreamModelId::new(model)
                         .ok()
                         .map(ProviderCooldownScope::upstream_model)
@@ -1185,13 +1196,17 @@ impl CodexCredentialSelector {
         account: &ProviderAccount,
         model: &gateway_core::routing::UpstreamModelId,
     ) -> Result<(), ProviderStoreError> {
+        if self.model_unsupported_cooldown.is_zero() {
+            return Ok(());
+        }
         let now = SystemTime::now();
         self.cooldowns
             .put_scoped_if_later(ProviderScopedCooldown::new(
                 account.id().clone(),
                 account.revision(),
                 ProviderCooldownScope::upstream_model(model.clone()),
-                now.checked_add(MODEL_UNSUPPORTED_COOLDOWN).unwrap_or(now),
+                now.checked_add(self.model_unsupported_cooldown)
+                    .unwrap_or(now),
             ))
             .await?;
         Ok(())

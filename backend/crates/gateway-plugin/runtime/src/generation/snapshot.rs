@@ -278,9 +278,11 @@ impl PluginRuntime {
                     .map_err(|_| AdminError::invalid("插件请求策略计划注册冲突"))
             })
             .transpose()?;
-        let middleware =
-            crate::adapter::middleware::PluginMiddlewarePlan::compile(middleware_entries)
-                .map(|plan| plan as Arc<dyn gateway_core::engine::middleware::MiddlewarePlan>);
+        let middleware = crate::adapter::middleware::PluginMiddlewarePlan::compile(
+            middleware_entries,
+            &self.config.http_filters,
+        )
+        .map(|plan| plan as Arc<dyn gateway_core::engine::middleware::MiddlewarePlan>);
         let upstream_adapters =
             crate::adapter::upstream_adapter::PluginUpstreamAdapterPlan::compile(upstream_entries);
         let execution = if middleware.is_some() || upstream_adapters.is_some() {

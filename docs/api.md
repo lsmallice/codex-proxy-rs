@@ -373,6 +373,22 @@ Codex 的 review 等子代理请求仍使用 `/v1/responses`，并通过 `x-open
 
 ### Responses 请求与传输
 
+部署可显式开启[响应前导与续接恢复](../deploy/README.md#响应前导与续接恢复)。
+该策略只在未交付实质输出时按 `max_retries` 进行同账号有界补发（默认 1 次，0–5），
+不保证上游未执行或不会重复计费；完整历史续接恢复独立限制为一次。
+`previous_response_not_found` 仍表示客户端需要完整历史；响应中的恢复文案不代表网关已经重试。
+未验证完整历史时不删除 `previous_response_id`，中转应保留 `error.code` 而非替换成通用错误
+
+可选的 `openai.ws_response_recovery.encrypted_history` 仅对 OpenAI OAuth 上游 WS 明确
+拒绝的密文执行有损恢复，默认关闭。尚无输出时最多同账号清理重发一次；已交付的错误
+仍保留，仅记录拒绝摘要供同范围下一轮自包含请求提前清理，不改变续接授权。
+纯密文不直接删除，普通消息正文、推理摘要和配对工具记录保留，详见部署的响应恢复配置
+
+可选的 `openai.request_compatibility` 在原生 HTTP/WS 请求链处理 Lite 上下文、OAuth
+store=false、JSON 指令、最低输出预算及工具结构。工具结构规则不删除工具或历史；非法名称
+返回 `400 invalid_tool_name`，无法确定的混合结构返回 `400 invalid_tool_structure`。
+各规则默认关闭，作用范围与副作用见部署说明；不包含推理档位映射
+
 #### 请求期限
 
 模型请求默认不限制总执行时长。排队受[并发等待设置](#8-运行设置)约束，上游传输仍有独立的连接、空闲与心跳超时；
@@ -1245,7 +1261,8 @@ OAuth 和 xAI 按已知套餐匹配目录，API Key 按账号与凭据版本隔�
 OpenAI 使用最近 30 分钟内同步的目录，xAI 使用未过期的套餐目录缓存；未知套餐或无有效目录时交由上游验证，仍执行 `modelAccess`
 
 原生 OpenAI Responses 上游返回 `error.code=model_not_found`，且状态为 400／403／404 或流内错误未提供状态时，
-该账号与模型组合冷却 30 分钟；其他模型仍可使用该账号。仅消息提及模型不支持不触发冷却；
+该账号与模型组合默认冷却 30 分钟；可通过 [模型不支持冷却配置](../deploy/README.md#模型不支持冷却)
+调整秒数或设为 `0` 关闭，其他模型仍可使用该账号。仅消息提及模型不支持不触发冷却；
 `unsupported_value` 属于请求参数错误，原样交回客户端，不触发换号或模型冷却。
 冷却按凭据版本隔离，不修改 `modelAccess`，也不解除原生续写的固定账号约束。OpenAI 的受管上游适配器不应用原生目录限制和模型拒绝冷却
 
@@ -1962,6 +1979,8 @@ HTTP 返回 `429`，`error.code` 为 `key_daily_budget_exceeded` 或 `key_weekly
 | `GET` | `/api/admin/settings/admin-api-key` | 只返回管理 API Key 是否存在 |
 | `POST` | `/api/admin/settings/admin-api-key/delete` | 删除管理 API Key |
 | `POST` | `/api/admin/settings/admin-api-key/regenerate` | 重新生成并一次性返回完整管理 API Key |
+| `GET` | `/api/admin/settings/fork` | 读取二开配置的当前生效值与保存值 |
+| `POST` | `/api/admin/settings/fork` | 保存并发布请求策略，启动资源项仍待重启 |
 
 读取设置返回 `configRevision`。更新请求必须携带读取时的同一版本；版本比较、设置替换和审计在同一事务内完成。
 并发修改导致版本过期时返回 `409`，不保存当前请求；读取最新设置并确认差异后再提交，不能静默重试覆盖。
@@ -1991,6 +2010,22 @@ HTTP 返回 `429`，`error.code` 为 `key_daily_budget_exceeded` 或 `key_weekly
 | [账号错误保护](#账号错误保护) | `accountErrorProtection` |
 | [账号预热](#账号预热) | `accountWarmupEnabled`、`accountWarmupScheduleTime`、`accountWarmupModel` |
 | [主动额度重置卡](#主动额度重置卡) | `resetCreditLeadMinutes`、`resetCreditMaxWeeklyRemainingPercent` |
+
+### 二开配置
+
+`GET /api/admin/settings/fork` 返回 `revision`、`active`、`saved` 和 `restartRequired`。
+`POST` 必须携带同一 `revision` 与完整 `values`，版本过期返回 409，不自动覆盖。
+`values` 仅包括 `openai.model_unsupported_cooldown_seconds`、`openai.ws_opening_recovery`、
+`openai.ws_response_recovery`、`openai.request_compatibility` 和 `plugins` 的配置，不接受凭据或上游地址。
+字段沿用 YAML 的 snake_case，范围见[部署配置](../deploy/README.md#模型不支持冷却)
+
+保存成功后发布单实例请求策略，不改变全局 `configRevision` 或重启服务。
+请求兼容、模型冷却和 WS 恢复开关/预算对新请求及 WS 下一轮生效，在途请求与重试沿用原快照。
+`plugins` 与两个密文缓存容量字段仍保留启动值，通过此接口保存成功后，仅这些待重启项使 `restartRequired=true`。
+混合保存时 `active` 包含已经热生效的值，`saved` 包含完整持久化值，不能把待重启提示理解为整份设置未生效。
+准备或写盘失败不发布，已有失效摘要不因策略发布被清空，手工改文件不自动热更新。
+文件或完整配置超过 64 KiB、字段无效时拒绝保存；读取到损坏文件时不覆盖。
+备份与升级保留要求见[二开配置管理](../deploy/README.md#二开配置管理)
 
 ### 历史保留
 
@@ -2798,6 +2833,7 @@ Provider metadata 分别保留 `requestedServiceTier` 与 `upstreamServiceTier` 
 | --- | --- | --- | --- |
 | `GET` | `/api/admin/system/version` | 无 | 当前构建、部署模式和可用更新 |
 | `GET` | `/api/admin/system/update/detail` | `refresh=true\|false`、`channel?` | 按临时通道读取或刷新 Release 详情 |
+| `GET` | `/api/admin/system/update/source-preview` | `source=fork\|official`、`channel=stable\|rc\|beta\|alpha` | 只读查询固定来源的发行和切换前置条件 |
 | `GET` | `/api/admin/system/update/events` | 无 | SSE 更新事件流 |
 | `POST` | `/api/admin/system/update` | `{ targetVersion, channel? }` | 受理后台在线更新，返回 `202` |
 | `GET` | `/api/admin/system/update/status` | 无 | 查询当前更新或回滚状态 |
@@ -2813,6 +2849,16 @@ Provider metadata 分别保留 `requestedServiceTier` 与 `upstreamServiceTier` 
 执行时应同时发送页面确认的 `channel` 与 `targetVersion`，服务端冻结该通道并重新复核远端目标；
 省略通道时按运行版本推导。版本摘要接口始终检查运行通道，不受临时查询影响。
 检查与执行使用同一规则，禁止的通道转换、跨实验线、跨大版本、降级或同版本重装均以 `40901` 拒绝。
+
+`source-preview` 独立于安装候选：`fork` 固定查询 `lsmallice/codex-proxy-rs`，`official` 固定查询
+`zyycn/codex-proxy-rs`，不接受自定义 URL 或仓库。开发构建也可查询，同一大版本内按所选常规通道
+找最高版本，包括低于当前版本的发行供比较。最多查询 10 页、总期限 30 秒，无缓存或安装副作用。
+查询失败返回错误，不伪装成没有发行。响应含 `source`、`repository`、`configuredRepository`、`channel`、
+`currentVersion`、可空的 `latestVersion` / `releaseUrl` / `notes`、恒为 `false` 的 `installationAllowed` 和 `checks`。
+每项检查含 `id`、`status: passed|blocked|pending` 和安全提示 `message`；数据库、插件与部署持久化仍为待验证。
+安装包检查只核对发行元数据，未下载或验证内容。结果不授权安装，不改变原更新接口、来源配置或更新状态。
+原 `POST /update` 不接受 `source` 字段，不能把来源预览当成跨仓库安装入口
+
 `hasUpdate=true` 仅表示当前构建支持在线更新，且存在允许的更高版本；`latestVersion`、`releaseUrl` 和
 `notes` 对应这个候选。没有可升级候选时，`hasUpdate=false`、`latestVersion` 为当前版本，
 `releaseUrl` 和 `notes` 保留当前版本的已发布 Release 信息；找不到匹配当前版本的 Release 时为空。
@@ -2996,6 +3042,9 @@ GitHub 的 `location` 使用 `kind: "github"`、`repository: "owner/repo"`、`ta
 安装成功也不会自动修改现有实例的固定制品。手动策略和不支持 Release 查询的来源返回明确错误，不伪装为没有更新
 
 ### 12.1 运行实例
+
+宿主启动配置可进一步按实例限定 HTTP 方法和路径，在分配插件调用名额前筛选，
+不修改此处的持久化 `bindings`；配置及容量边界见[插件容量与入口隔离](../deploy/README.md#插件容量与入口隔离)
 
 | 方法 | 路径 | 行为 |
 | --- | --- | --- |

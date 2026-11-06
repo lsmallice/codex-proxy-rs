@@ -57,12 +57,20 @@ impl ProcessSupervisor {
     }
 
     pub fn spawn(&self, spec: ProcessSpec) -> Result<ProcessConnection, ProcessStartError> {
+        self.spawn_with_environment(spec, &[])
+    }
+
+    pub fn spawn_with_environment(
+        &self,
+        spec: ProcessSpec,
+        environment: &[(String, String)],
+    ) -> Result<ProcessConnection, ProcessStartError> {
         let slot = self
             .slots
             .clone()
             .try_acquire_owned()
             .map_err(|_| ProcessStartError::Capacity)?;
-        spawn_process(spec, slot)
+        spawn_process(spec, slot, environment)
     }
 }
 
@@ -101,10 +109,12 @@ impl ProcessControl {
 fn spawn_process(
     spec: ProcessSpec,
     slot: tokio::sync::OwnedSemaphorePermit,
+    environment: &[(String, String)],
 ) -> Result<ProcessConnection, ProcessStartError> {
     let mut child = Command::new(&spec.executable)
         .current_dir(&spec.directory)
         .env_clear()
+        .envs(environment.iter().cloned())
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())

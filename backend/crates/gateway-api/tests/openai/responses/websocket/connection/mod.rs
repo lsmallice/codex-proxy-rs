@@ -848,6 +848,8 @@ async fn start_active_response_with(
         let admin = crate::admin::AdminTestFixture::new().await;
         gateway_api::initialize(
             gateway_api::ApiConfig {
+                responses_policy_source: None,
+                responses_compatibility: Default::default(),
                 asset_directory: std::env::temp_dir(),
                 cors_allowed_origins: Vec::new(),
                 request_timeout_seconds: None,

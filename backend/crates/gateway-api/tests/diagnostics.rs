@@ -17,6 +17,8 @@ async fn fixture() -> (axum::Router, Arc<RecordingDiagnostics>) {
     let router = crate::openai::api_bundle_with_diagnostics(
         admin.services,
         gateway_api::ApiConfig {
+            responses_policy_source: None,
+            responses_compatibility: Default::default(),
             asset_directory: env!("CARGO_MANIFEST_DIR").into(),
             cors_allowed_origins: Vec::new(),
             request_timeout_seconds: None,

@@ -288,6 +288,7 @@ pub struct RequestAttemptContext {
     response_control: Option<response_control::ResponseControl>,
     pricing: Arc<crate::metering::PricingOverrides>,
     request_profile: Option<crate::account::OpaqueProviderData>,
+    provider_policy: Option<crate::account::OpaqueProviderData>,
     fast_mode: FastMode,
     request_location: Option<crate::account::RequestLocation>,
     privacy: Option<Arc<dyn crate::settings::privacy::CompiledPrivacyPolicy>>,
@@ -309,6 +310,14 @@ pub struct RequestAttemptContext {
 }
 
 impl RequestAttemptContext {
+    #[must_use]
+    pub fn with_provider_policy(
+        mut self,
+        policy: Option<crate::account::OpaqueProviderData>,
+    ) -> Self {
+        self.provider_policy = policy;
+        self
+    }
     fn with_account_error_protection(
         mut self,
         protection: Option<account_protection::ProtectionContext>,
@@ -405,6 +414,7 @@ impl RequestAttemptContext {
             request_id,
             client_api_key_ref,
             request_profile: None,
+            provider_policy: None,
             pricing: Arc::default(),
             fast_mode: FastMode::Default,
             request_location: None,
@@ -655,6 +665,11 @@ impl AttemptContext {
     #[must_use]
     pub const fn request_profile(&self) -> Option<&crate::account::OpaqueProviderData> {
         self.request.request_profile.as_ref()
+    }
+
+    #[must_use]
+    pub const fn provider_policy(&self) -> Option<&crate::account::OpaqueProviderData> {
+        self.request.provider_policy.as_ref()
     }
 
     #[must_use]

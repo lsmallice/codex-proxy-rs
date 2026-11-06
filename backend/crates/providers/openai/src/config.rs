@@ -3,7 +3,7 @@
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use url::Url;
 
 use crate::credential::CodexQuotaRefreshPolicy;
@@ -25,9 +25,15 @@ const fn default_stream_max_retries() -> u64 {
     DEFAULT_STREAM_MAX_RETRIES
 }
 
+const fn default_model_unsupported_cooldown_seconds() -> u64 {
+    30 * 60
+}
+
 /// OpenAI Provider 唯一启动配置
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
 pub struct OpenAiConfig {
+    #[serde(skip)]
+    pub fork_runtime: Option<std::sync::Arc<crate::OpenAiForkRuntime>>,
     #[serde(skip)]
     pub(crate) timezone: gateway_core::time::DeploymentTimeZone,
     #[serde(default)]
@@ -42,6 +48,12 @@ pub struct OpenAiConfig {
     pub stream_max_retries: u64,
     #[serde(default)]
     pub ws_opening_recovery: CodexWsOpeningRecovery,
+    #[serde(default = "default_model_unsupported_cooldown_seconds")]
+    pub model_unsupported_cooldown_seconds: u64,
+    #[serde(default)]
+    pub ws_response_recovery: CodexWsResponseRecovery,
+    #[serde(default)]
+    pub request_compatibility: CodexRequestCompatibility,
     #[serde(default)]
     pub residency: Option<String>,
     #[serde(default)]
@@ -67,6 +79,12 @@ impl OpenAiConfig {
         self.quota.validate()?;
         self.auth.validate()?;
         self.ws_opening_recovery.validate()?;
+        self.ws_response_recovery.validate()?;
+        if self.model_unsupported_cooldown_seconds > 86400 {
+            return Err(OpenAiConfigError::InvalidField(
+                "openai.model_unsupported_cooldown_seconds",
+            ));
+        }
         self.identity_secret_path = runtime_data_dir.join("identity_hmac_secret");
         Ok(())
     }
@@ -121,6 +139,7 @@ impl OpenAiConfig {
 impl Default for OpenAiConfig {
     fn default() -> Self {
         Self {
+            fork_runtime: None,
             timezone: Default::default(),
             api: CodexApiConfig::default(),
             ws_pool: CodexWebSocketPoolSettings::default(),
@@ -128,6 +147,9 @@ impl Default for OpenAiConfig {
             auth: CodexAuthSettings::default(),
             stream_max_retries: DEFAULT_STREAM_MAX_RETRIES,
             ws_opening_recovery: CodexWsOpeningRecovery::default(),
+            model_unsupported_cooldown_seconds: default_model_unsupported_cooldown_seconds(),
+            ws_response_recovery: CodexWsResponseRecovery::default(),
+            request_compatibility: CodexRequestCompatibility::default(),
             residency: None,
             account_routing_override: None,
             identity_secret_path: PathBuf::new(),
@@ -135,8 +157,85 @@ impl Default for OpenAiConfig {
     }
 }
 
+/// 显式启用的 Responses 请求修正，不修改推理档位或扩大账号权限
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(default, deny_unknown_fields)]
+pub struct CodexRequestCompatibility {
+    pub lite_context: bool,
+    pub store_false: bool,
+    pub json_object: bool,
+    pub min_output_tokens_16: bool,
+    pub tool_structure: bool,
+}
+
+/// 无语义输出的有界补发与单次完整历史恢复，互斥于握手恢复
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(default, deny_unknown_fields)]
+pub struct CodexWsResponseRecovery {
+    pub enabled: bool,
+    pub full_history: bool,
+    pub encrypted_history: bool,
+    pub encrypted_history_max_sessions: usize,
+    pub encrypted_history_max_digests_per_session: usize,
+    pub max_retries: u32,
+    pub window_ms: u64,
+    pub max_prefix_bytes: usize,
+    pub close_codes: Vec<u16>,
+    pub disconnects: bool,
+}
+impl Default for CodexWsResponseRecovery {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            full_history: false,
+            encrypted_history: false,
+            encrypted_history_max_sessions: 65536,
+            encrypted_history_max_digests_per_session: 512,
+            max_retries: 1,
+            window_ms: 5000,
+            max_prefix_bytes: 65536,
+            close_codes: vec![1000, 1011, 1012],
+            disconnects: true,
+        }
+    }
+}
+impl CodexWsResponseRecovery {
+    fn validate(&self) -> Result<(), OpenAiConfigError> {
+        if !(1..=65536).contains(&self.encrypted_history_max_sessions)
+            || !(1..=512).contains(&self.encrypted_history_max_digests_per_session)
+        {
+            return Err(OpenAiConfigError::InvalidField(
+                "openai.ws_response_recovery.encrypted_history_capacity",
+            ));
+        }
+        if self.max_retries > 5 {
+            return Err(OpenAiConfigError::InvalidField(
+                "openai.ws_response_recovery.max_retries",
+            ));
+        }
+        if !(1..=10000).contains(&self.window_ms)
+            || !(1024..=262144).contains(&self.max_prefix_bytes)
+        {
+            return Err(OpenAiConfigError::InvalidField(
+                "openai.ws_response_recovery",
+            ));
+        }
+        if self.close_codes.len() > 5
+            || self
+                .close_codes
+                .iter()
+                .any(|code| !matches!(code, 1000 | 1001 | 1011 | 1012 | 1013))
+        {
+            return Err(OpenAiConfigError::InvalidField(
+                "openai.ws_response_recovery.close_codes",
+            ));
+        }
+        Ok(())
+    }
+}
+
 /// 空正文 WS opening 403 的显式有界恢复策略，不放宽普通权限拒绝
-#[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(default, deny_unknown_fields)]
 pub struct CodexWsOpeningRecovery {
     pub enabled: bool,

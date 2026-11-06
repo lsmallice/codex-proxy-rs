@@ -7,6 +7,7 @@ mod events;
 mod installation;
 mod operations;
 mod release;
+mod source_preview;
 mod state;
 mod swap_paths;
 

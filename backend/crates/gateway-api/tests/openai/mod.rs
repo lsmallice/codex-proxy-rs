@@ -59,6 +59,8 @@ pub(super) fn api_router_with_admin(admin: gateway_admin::AdminServices) -> axum
     api_router_with_config(
         admin,
         gateway_api::ApiConfig {
+            responses_policy_source: None,
+            responses_compatibility: Default::default(),
             asset_directory: std::env::temp_dir(),
             cors_allowed_origins: Vec::new(),
             request_timeout_seconds: None,
@@ -74,6 +76,8 @@ pub(super) fn api_router_with_admin_and_execution(
     api_router_with_config_and_execution(
         admin,
         gateway_api::ApiConfig {
+            responses_policy_source: None,
+            responses_compatibility: Default::default(),
             asset_directory: std::env::temp_dir(),
             cors_allowed_origins: Vec::new(),
             request_timeout_seconds: None,
@@ -189,6 +193,8 @@ async fn api_router_with_origins_and_worker_health(
     let admin = crate::admin::AdminTestFixture::new().await;
     gateway_api::initialize(
         gateway_api::ApiConfig {
+            responses_policy_source: None,
+            responses_compatibility: Default::default(),
             asset_directory: std::env::temp_dir(),
             cors_allowed_origins,
             request_timeout_seconds: None,

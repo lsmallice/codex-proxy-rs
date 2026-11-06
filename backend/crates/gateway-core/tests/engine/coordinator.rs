@@ -741,6 +741,7 @@ enum Script {
 }
 
 struct ScriptedProvider {
+    policy_calls: AtomicUsize,
     provider_name: &'static str,
     profile_generation: AtomicUsize,
     default_profile_calls: AtomicUsize,
@@ -769,6 +770,7 @@ impl ScriptedProvider {
     fn named(provider_name: &'static str, scripts: Vec<Script>) -> Self {
         Self {
             provider_name,
+            policy_calls: AtomicUsize::new(0),
             profile_generation: AtomicUsize::new(1),
             default_profile_calls: AtomicUsize::new(0),
             default_profile: Mutex::new(None),
@@ -783,6 +785,17 @@ impl ScriptedProvider {
 
 #[async_trait]
 impl Provider for ScriptedProvider {
+    fn request_policy_snapshot(
+        &self,
+        _: &Operation,
+    ) -> Option<gateway_core::account::OpaqueProviderData> {
+        Some(gateway_core::account::OpaqueProviderData::new(
+            serde_json::Map::from_iter([(
+                "generation".into(),
+                json!(self.policy_calls.fetch_add(1, Ordering::SeqCst)),
+            )]),
+        ))
+    }
     fn resolve_request_profile(
         &self,
         configuration: &gateway_core::account::OpaqueProviderData,
@@ -6089,6 +6102,10 @@ fn global_location_and_group_fast_policy_reach_every_account_retry() {
         block_on(session.commit_downstream(Some(200))).unwrap();
         let contexts = provider.contexts.lock().unwrap();
         assert_eq!(contexts.len(), 2);
+        assert_eq!(provider.policy_calls.load(Ordering::SeqCst), 1);
+        assert!(contexts.iter().all(|context| {
+            context.provider_policy().unwrap().expose_to_provider()["generation"] == 0
+        }));
         assert!(
             contexts
                 .iter()

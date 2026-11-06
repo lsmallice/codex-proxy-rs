@@ -1,5 +1,34 @@
 {
   "systemUpdate": {
+    "sources": {
+      "current": "Update current source",
+      "preview": "Switch release source",
+      "view": "Update view",
+      "label": "Release source",
+      "fork": "Our fork",
+      "official": "Official upstream",
+      "stage": "Release channel",
+      "inspect": "Check prerequisites",
+      "readOnly": "Read-only preview, no source changes, installation or restart",
+      "officialWarning": "Switching to upstream disables fork cooldown, retry and plugin capacity settings",
+      "loading": "Checking releases and prerequisites",
+      "configured": "Configured source",
+      "target": "Queried source",
+      "noRelease": "No release found",
+      "results": "Source switch prerequisites",
+      "passed": "Satisfied",
+      "blocked": "Blocked",
+      "pending": "Unverified",
+      "checkSource": "Source configuration",
+      "checkBuild": "Build eligibility",
+      "checkVersion": "Version policy",
+      "checkAssets": "Release assets",
+      "checkDatabase": "Database compatibility",
+      "checkPlugins": "Plugin compatibility",
+      "checkDeployment": "Deployment persistence",
+      "checkSwitch": "Installation",
+      "close": "Close"
+    },
     "channels": {
       "stable": {
         "label": "Stable",

@@ -1,5 +1,6 @@
 //! Responses 接口测试入口，以及协议请求与事件构造辅助
 
+mod compatibility;
 mod http;
 mod request;
 mod websocket;

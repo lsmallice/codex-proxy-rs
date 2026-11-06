@@ -17,6 +17,70 @@ fn config_loader_should_load_complete_terminal_example() {
 }
 
 #[test]
+fn saved_fork_settings_override_yaml_on_startup_and_reject_invalid_files() {
+    let mut document = valid_config_document();
+    let runtime = tempfile::tempdir().unwrap();
+    document["host"]["runtime_data_dir"] = serde_json::json!(runtime.path());
+    let values = serde_json::json!({
+        "openai": provider_openai::OpenAiForkSettings::from(&provider_openai::OpenAiConfig::default()),
+        "plugins": gateway_plugin_runtime::PluginStartupConfig::default(),
+    });
+    let mut saved = serde_json::json!({"schema":1,"values":values});
+    saved["values"]["openai"]["model_unsupported_cooldown_seconds"] = serde_json::json!(0);
+    saved["values"]["openai"]["ws_response_recovery"]["max_retries"] = serde_json::json!(3);
+    let path = runtime.path().join("fork-settings.json");
+    fs::write(&path, saved.to_string()).unwrap();
+    let (loaded, _directory) = parse_config(&document.to_string()).unwrap();
+    let debug = format!("{loaded:?}");
+    assert!(debug.contains("model_unsupported_cooldown_seconds: 0"));
+    assert!(debug.contains("max_retries: 3"));
+    assert!(!debug.contains(POSTGRES_PASSWORD));
+    saved["values"]["openai"]
+        .as_object_mut()
+        .unwrap()
+        .remove("request_compatibility");
+    for field in [
+        "encrypted_history",
+        "encrypted_history_max_sessions",
+        "encrypted_history_max_digests_per_session",
+    ] {
+        saved["values"]["openai"]["ws_response_recovery"]
+            .as_object_mut()
+            .unwrap()
+            .remove(field);
+    }
+    fs::write(&path, saved.to_string()).unwrap();
+    let (loaded, _) = parse_config(&document.to_string()).unwrap();
+    assert!(format!("{loaded:?}").contains("encrypted_history: false"));
+    assert!(format!("{loaded:?}").contains("lite_context: false"));
+    saved["values"]["openai"]["request_compatibility"] = serde_json::json!({"lite_context":true,"store_false":true,"json_object":true,"min_output_tokens_16":true,"tool_structure":true});
+    saved["values"]["openai"]["ws_response_recovery"]["encrypted_history"] =
+        serde_json::json!(true);
+    fs::write(&path, saved.to_string()).unwrap();
+    let (loaded, _) = parse_config(&document.to_string()).unwrap();
+    assert!(format!("{loaded:?}").contains("encrypted_history: true"));
+    assert!(format!("{loaded:?}").contains("tool_structure: true"));
+    saved["values"]["openai"]["ws_response_recovery"]["max_retries"] = serde_json::json!(6);
+    fs::write(&path, saved.to_string()).unwrap();
+    assert!(parse_config(&document.to_string()).is_err());
+    fs::write(&path, b"broken").unwrap();
+    assert!(parse_config(&document.to_string()).is_err());
+}
+
+#[test]
+fn plugin_capacity_and_http_filters_are_validated_by_startup() {
+    let mut document = valid_config_document();
+    document["plugins"] = serde_json::json!({"rpc":{"maximum_calls":512,"maximum_callbacks":1024},"http_filters":{"a0f1ee31-0005-8e2a-bfd9-30e7de51c321":[{"method":"POST","path":"/v1/responses"}]}});
+    parse_config(&document.to_string()).unwrap();
+    document["plugins"]["rpc"]["maximum_calls"] = serde_json::json!(1025);
+    assert!(parse_config(&document.to_string()).is_err());
+    document["plugins"]["rpc"]["maximum_calls"] = serde_json::json!(512);
+    document["plugins"]["http_filters"]["a0f1ee31-0005-8e2a-bfd9-30e7de51c321"][0]["path"] =
+        serde_json::json!("/api/*");
+    assert!(parse_config(&document.to_string()).is_err());
+}
+
+#[test]
 fn config_loader_should_resolve_paths_relative_to_config_file() {
     let (config, _directory) = parse_config(&valid_config()).expect("resolved config");
     let debug = format!("{config:?}");

@@ -1,7 +1,10 @@
 //! OpenAI Responses 的透明 wire adapter 与 Core canonical facts 投影
 
+mod compatibility;
 mod error;
 mod http;
+pub(in crate::openai) use compatibility::prepare as prepare_compatibility;
+pub use compatibility::{ResponsesIngressCompatibility, ResponsesPolicySource};
 mod keepalive;
 mod request;
 mod response;

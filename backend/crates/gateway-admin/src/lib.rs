@@ -199,6 +199,7 @@ pub enum AdminConfigError {
 /// 字段全部私有；调用方经 accessor 直接调用能力，不需要命名内部 `use_case` 模块
 #[derive(Clone)]
 pub struct AdminServices {
+    fork_settings: Option<Arc<dyn ports::fork_settings::ForkSettingsService>>,
     timezone: gateway_core::time::DeploymentTimeZone,
     public_services: Arc<public_service::Registry>,
     plugins: Arc<PluginsService>,
@@ -223,6 +224,21 @@ pub struct AdminServices {
 }
 
 impl AdminServices {
+    #[must_use]
+    pub fn with_fork_settings(
+        mut self,
+        service: Arc<dyn ports::fork_settings::ForkSettingsService>,
+    ) -> Self {
+        self.fork_settings = Some(service);
+        self
+    }
+    pub fn fork_settings(
+        &self,
+    ) -> Result<&dyn ports::fork_settings::ForkSettingsService, model::AdminError> {
+        self.fork_settings
+            .as_deref()
+            .ok_or_else(|| model::AdminError::invalid("当前实例未启用二开配置管理"))
+    }
     #[must_use]
     pub const fn timezone(&self) -> gateway_core::time::DeploymentTimeZone {
         self.timezone

@@ -6,4 +6,5 @@ mod generation;
 mod package;
 #[cfg(unix)]
 mod rpc;
+mod settings;
 mod support;

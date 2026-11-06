@@ -1152,6 +1152,14 @@ impl fmt::Debug for ProviderRequest {
 /// 新的 attempt 再次调用
 #[async_trait]
 pub trait Provider: Send + Sync {
+    /// 本请求首次选到该 Provider 时冻结策略，Core 仅传递不透明值并在重试中复用
+    fn request_policy_snapshot(
+        &self,
+        _operation: &Operation,
+    ) -> Option<crate::account::OpaqueProviderData> {
+        None
+    }
+
     /// 声明可用于互联共享的直连认证方式，不执行网络查询
     fn is_direct_account(&self, _authentication_kind: &str) -> bool {
         false

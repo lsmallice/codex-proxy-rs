@@ -60,6 +60,20 @@ async fn http_plugin_with_configuration(
     ExtensionSetReference,
     gateway_core::engine::middleware::FrozenMiddlewarePlan,
 ) {
+    http_plugin_with_filters(configuration, limits, failure_policy, BTreeMap::new()).await
+}
+
+async fn http_plugin_with_filters(
+    configuration: serde_json::Value,
+    limits: RpcLimits,
+    failure_policy: PluginFailurePolicy,
+    filters: BTreeMap<String, Vec<gateway_plugin_runtime::PluginHttpRoute>>,
+) -> (
+    tempfile::TempDir,
+    PluginRuntime,
+    ExtensionSetReference,
+    gateway_core::engine::middleware::FrozenMiddlewarePlan,
+) {
     let worker = std::fs::read(env!("CARGO_BIN_EXE_gateway-plugin-test-middleware")).unwrap();
     let package = crate::support::package_with_contributions(
         &worker,
@@ -70,7 +84,7 @@ async fn http_plugin_with_configuration(
             vec!["http".into()],
         )]),
     );
-    let (cache, runtime) = setup_package_with_limits(
+    let (cache, runtime) = setup_package_with_http_filters(
         vec![InstanceFixture {
             id: "http-plugin",
             configuration,
@@ -78,6 +92,7 @@ async fn http_plugin_with_configuration(
         }],
         package,
         limits,
+        filters,
     )
     .await;
     let generation = prepare(&runtime).await;

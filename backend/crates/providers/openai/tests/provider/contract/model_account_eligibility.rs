@@ -595,12 +595,13 @@ async fn unsupported_reasoning_value_preserves_account_eligibility_across_transp
 async fn upstream_model_rejection_cools_only_that_model_across_requests_and_transports() {
     use gateway_core::provider_ports::{ProviderCooldownScope, ProviderScopedCooldown};
 
-    for websocket in [false, true] {
+    for (websocket, seconds) in [(false, 1800), (true, 1800), (false, 60), (true, 60)] {
         let server = MockServer::start().await;
         let store = Arc::new(MemoryAccountStore::default());
         create_account(&store, "acct_provider_contract").await;
         let cooldowns = Arc::new(MemoryCooldownPort::new());
-        let (provider, pool) = provider_with_cooldowns(&store, server.uri(), cooldowns.clone());
+        let (provider, pool) =
+            provider_with_model_cooldown(&store, server.uri(), cooldowns.clone(), seconds);
         Mock::given(method(if websocket { "GET" } else { "POST" }))
             .and(path("/codex/responses"))
             .respond_with(ResponseTemplate::new(400).set_body_json(json!({"error":{
@@ -677,7 +678,7 @@ async fn upstream_model_rejection_cools_only_that_model_across_requests_and_tran
             let mut scoped = cooldowns.scoped.lock().unwrap();
             let until = scoped[&key].until();
             assert!(
-                (Duration::from_secs(29 * 60)..=Duration::from_secs(30 * 60))
+                (Duration::from_secs(seconds - 30)..=Duration::from_secs(seconds))
                     .contains(&until.duration_since(SystemTime::now()).unwrap())
             );
             scoped.insert(
@@ -701,6 +702,134 @@ async fn upstream_model_rejection_cools_only_that_model_across_requests_and_tran
         while let Some(event) = recovered.next().await {
             event.unwrap();
         }
+        pool.shutdown().await;
+    }
+}
+
+#[tokio::test]
+async fn zero_model_cooldown_ignores_existing_entries_and_never_writes_rejections() {
+    use gateway_core::provider_ports::{ProviderCooldownScope, ProviderScopedCooldown};
+
+    for (websocket, existing) in [(false, false), (true, false), (false, true), (true, true)] {
+        let server = MockServer::start().await;
+        let store = Arc::new(MemoryAccountStore::default());
+        create_account(&store, "acct_provider_contract").await;
+        let account = store.account("acct_provider_contract").unwrap();
+        let cooldowns = Arc::new(MemoryCooldownPort::new());
+        let scope =
+            ProviderCooldownScope::upstream_model(UpstreamModelId::new("gpt-6-astra").unwrap());
+        if existing {
+            cooldowns.scoped.lock().unwrap().insert(
+                (account.id().clone(), scope.clone()),
+                ProviderScopedCooldown::new(
+                    account.id().clone(),
+                    account.revision(),
+                    scope,
+                    SystemTime::now() + Duration::from_secs(1800),
+                ),
+            );
+        }
+        let before = cooldowns.scoped.lock().unwrap().clone();
+        let (provider, pool) =
+            provider_with_model_cooldown(&store, server.uri(), cooldowns.clone(), 0);
+        Mock::given(method(if websocket { "GET" } else { "POST" }))
+            .and(path("/codex/responses"))
+            .respond_with(ResponseTemplate::new(400).set_body_json(json!({"error": {
+                "code":"model_not_found", "type":"invalid_request_error",
+                "message":"The requested model is not available."
+            }})))
+            .expect(2)
+            .mount(&server)
+            .await;
+        for request_id in [
+            "req_no_model_cooldown_first",
+            "req_no_model_cooldown_second",
+        ] {
+            let operation = if websocket {
+                Operation::Generate(GenerateRequest::from_protocol_payload(
+                    ProtocolPayload::json_object(
+                        "openai",
+                        Map::from_iter([
+                            ("model".to_owned(), json!("gpt-6-astra")),
+                            ("input".to_owned(), json!("hello")),
+                        ]),
+                    )
+                    .unwrap(),
+                ))
+            } else {
+                operation("gpt-6-astra")
+            };
+            let mut stream = provider
+                .clone()
+                .execute(
+                    planned_request_for_model("openai", operation, "gpt-6-astra"),
+                    context(request_id, CancellationToken::new()),
+                )
+                .await
+                .unwrap();
+            let (_, error) = super::precommit::stream_failure(&mut stream).await;
+            assert_eq!(error.kind(), ProviderErrorKind::Unsupported);
+            assert_eq!(error.upstream_code().unwrap().as_str(), "model_not_found");
+            assert!(error.replay_is_safe());
+            drop(stream);
+        }
+        assert_eq!(*cooldowns.scoped.lock().unwrap(), before);
+        assert!(cooldowns.cooldowns.lock().unwrap().is_empty());
+        assert_eq!(
+            store.account(account.id().as_str()).unwrap().quota(),
+            account.quota()
+        );
+        pool.shutdown().await;
+    }
+}
+
+#[tokio::test]
+async fn zero_model_cooldown_preserves_account_protection_and_quota_exhaustion() {
+    use gateway_core::provider_ports::{ProviderCooldown, ProviderCooldownKind};
+
+    for protection in ["rate_limit", "freeze", "quota"] {
+        let server = MockServer::start().await;
+        let store = Arc::new(MemoryAccountStore::default());
+        create_account(&store, "acct_provider_contract").await;
+        let account = store.account("acct_provider_contract").unwrap();
+        let cooldowns = Arc::new(MemoryCooldownPort::new());
+        if protection == "quota" {
+            exhaust_account_quota(&store, account.id().as_str()).await;
+        } else {
+            cooldowns.cooldowns.lock().unwrap().insert(
+                account.id().clone(),
+                ProviderCooldown::new_with_kind(
+                    account.id().clone(),
+                    account.revision(),
+                    SystemTime::now() + Duration::from_secs(300),
+                    if protection == "freeze" {
+                        ProviderCooldownKind::CapacityFreezeProbe
+                    } else {
+                        ProviderCooldownKind::RateLimit
+                    },
+                ),
+            );
+        }
+        let before = cooldowns.cooldowns.lock().unwrap().clone();
+        let quota = store.account(account.id().as_str()).unwrap().quota();
+        let (provider, pool) =
+            provider_with_model_cooldown(&store, server.uri(), cooldowns.clone(), 0);
+        assert!(
+            provider
+                .execute(
+                    planned_request_for_model("openai", operation("gpt-6-astra"), "gpt-6-astra"),
+                    context("req_account_protection", CancellationToken::new()),
+                )
+                .await
+                .is_err(),
+            "{protection}"
+        );
+        assert!(
+            server.received_requests().await.unwrap().is_empty(),
+            "{protection}"
+        );
+        assert_eq!(*cooldowns.cooldowns.lock().unwrap(), before);
+        assert_eq!(store.account(account.id().as_str()).unwrap().quota(), quota);
         pool.shutdown().await;
     }
 }

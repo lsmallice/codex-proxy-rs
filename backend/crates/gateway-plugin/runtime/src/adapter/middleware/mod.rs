@@ -35,6 +35,7 @@ pub(crate) struct MiddlewareEntry {
     invocation: Option<MiddlewareInvocationPorts>,
     scope: BindingScope,
     failure_policy: PluginFailurePolicy,
+    http_filter: Option<Vec<crate::PluginHttpRoute>>,
 }
 
 pub(crate) fn validate_bindings(
@@ -162,6 +163,7 @@ fn compile_entry(
         invocation,
         scope,
         failure_policy: binding.failure_policy.clone(),
+        http_filter: None,
     })
 }
 
@@ -179,7 +181,10 @@ impl fmt::Debug for PluginMiddlewarePlan {
 }
 
 impl PluginMiddlewarePlan {
-    pub(crate) fn compile(mut entries: Vec<MiddlewareEntry>) -> Option<Arc<Self>> {
+    pub(crate) fn compile(
+        mut entries: Vec<MiddlewareEntry>,
+        filters: &BTreeMap<String, Vec<crate::PluginHttpRoute>>,
+    ) -> Option<Arc<Self>> {
         if entries.is_empty() {
             return None;
         }
@@ -192,7 +197,10 @@ impl PluginMiddlewarePlan {
         });
         // 发布时固定各挂载位置的有序候选，消息处理不再扫描其他边界的绑定
         let mut by_mount = BTreeMap::<_, Vec<_>>::new();
-        for entry in entries {
+        for mut entry in entries {
+            if entry.mount == MiddlewareMount::Http {
+                entry.http_filter = filters.get(&entry.instance_id).cloned();
+            }
             by_mount
                 .entry(entry.mount)
                 .or_default()

@@ -65,6 +65,10 @@ impl WireValidationError {
 /// API-owned HTTP 与静态资源配置
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
 pub struct ApiConfig {
+    #[serde(skip)]
+    pub responses_compatibility: openai::responses::ResponsesIngressCompatibility,
+    #[serde(skip)]
+    pub responses_policy_source: Option<openai::responses::ResponsesPolicySource>,
     pub asset_directory: PathBuf,
     pub cors_allowed_origins: Vec<String>,
     pub request_timeout_seconds: Option<u64>,
@@ -212,7 +216,9 @@ pub fn initialize(
     };
     let state = ApiState {
         admin,
-        openai: OpenAiService::new(execution, lifecycle),
+        openai: OpenAiService::new(execution, lifecycle)
+            .with_responses_compatibility(config.responses_compatibility)
+            .with_responses_policy_source(config.responses_policy_source),
         health: HealthStatus::new(probes, worker_health, diagnostics.clone()),
     };
     let index = config.asset_directory.join("index.html");

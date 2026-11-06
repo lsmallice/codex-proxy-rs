@@ -102,6 +102,11 @@ export const routes: RouteRecordRaw[] = [
             component: () => import('@/views/settings/index.vue'),
           },
           {
+            path: 'fork',
+            name: 'settings-fork',
+            component: () => import('@/views/settings/index.vue'),
+          },
+          {
             path: 'pricing',
             name: 'settings-pricing',
             component: () => import('@/views/settings/index.vue'),

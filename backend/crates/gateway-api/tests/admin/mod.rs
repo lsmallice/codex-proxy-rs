@@ -92,6 +92,7 @@ mod client_keys;
 mod compression;
 mod error_diagnostics;
 mod errors;
+mod fork_settings;
 mod observability;
 mod proxies;
 mod settings;

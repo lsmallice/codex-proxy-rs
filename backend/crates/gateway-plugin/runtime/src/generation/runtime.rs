@@ -47,6 +47,7 @@ pub struct PluginRuntimeConfig {
     pub package_limits: PackageLimits,
     pub rpc_limits: RpcLimits,
     pub restart_circuit: PluginRestartCircuitConfig,
+    pub http_filters: BTreeMap<String, Vec<crate::PluginHttpRoute>>,
 }
 
 /// 只索引有主人的候选；当前代次仅由 Core 的发布视图持有

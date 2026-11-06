@@ -18,6 +18,11 @@ pub struct GatewayConfig {
     pub(super) api: gateway_api::ApiConfig,
     #[serde(default)]
     pub(super) openai: provider_openai::OpenAiConfig,
+    #[serde(default)]
+    pub(super) plugins: gateway_plugin_runtime::PluginStartupConfig,
+    #[serde(skip)]
+    pub(super) fork_settings:
+        Option<std::sync::Arc<gateway_host::fork_settings::ForkSettingsStore>>,
 }
 
 impl LoadableConfig for GatewayConfig {
@@ -32,6 +37,7 @@ impl LoadableConfig for GatewayConfig {
             .map_err(|_| ConfigError::InvalidField("api"))?;
         self.host
             .resolve_and_validate(source_dir, &self.api.asset_directory)?;
+        super::fork_settings::initialize(self)?;
         let runtime_data_dir = self.host.runtime_data_dir().to_path_buf();
         self.store
             .resolve_and_validate(&runtime_data_dir)
@@ -45,6 +51,7 @@ impl LoadableConfig for GatewayConfig {
         self.openai
             .resolve_and_validate(&runtime_data_dir)
             .map_err(|_| ConfigError::InvalidField("openai"))?;
+        self.plugins.validate().map_err(ConfigError::InvalidField)?;
         Ok(())
     }
 }

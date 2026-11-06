@@ -131,6 +131,18 @@ pub trait SystemRestartPreflight: Send + Sync {
 /// 版本、自更新、回滚和重启能力；实现唯一归 gateway-host
 #[async_trait]
 pub trait SystemOperations: Send + Sync {
+    /// 只读来源预检，不创建更新操作或写入部署偏好
+    async fn source_preview(
+        &self,
+        _source: crate::model::system::SystemReleaseSource,
+        _channel: SystemUpdateChannel,
+    ) -> Result<crate::model::system::SystemSourcePreview, SystemOperationError> {
+        Err(SystemOperationError::new(
+            SystemOperationErrorKind::Invalid,
+            "当前宿主不支持发行来源预检",
+        ))
+    }
+
     async fn version(&self) -> Result<SystemVersion, SystemOperationError>;
 
     async fn update_detail(

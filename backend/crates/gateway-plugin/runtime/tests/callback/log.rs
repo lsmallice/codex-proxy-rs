@@ -162,6 +162,7 @@ async fn real_worker_logs_are_correlated_sanitized_validated_and_bounded() {
                 ..RpcLimits::default()
             },
             restart_circuit: Default::default(),
+            http_filters: Default::default(),
         },
         Arc::new(gateway_host::outbound::HttpClient::new().unwrap()),
         Arc::new(gateway_host::process::ProcessSupervisor::new(

@@ -22,6 +22,11 @@ use crate::{
 /// API 消费的系统管理服务
 #[async_trait]
 pub trait SystemService: Send + Sync {
+    async fn source_preview(
+        &self,
+        source: crate::model::system::SystemReleaseSource,
+        channel: SystemUpdateChannel,
+    ) -> Result<crate::model::system::SystemSourcePreview, AdminError>;
     async fn version(&self) -> Result<SystemVersion, AdminError>;
     async fn update_detail(
         &self,
@@ -65,6 +70,17 @@ impl DefaultSystemService {
 
 #[async_trait]
 impl SystemService for DefaultSystemService {
+    async fn source_preview(
+        &self,
+        source: crate::model::system::SystemReleaseSource,
+        channel: SystemUpdateChannel,
+    ) -> Result<crate::model::system::SystemSourcePreview, AdminError> {
+        self.operations
+            .source_preview(source, channel)
+            .await
+            .map_err(map_system_error)
+    }
+
     async fn version(&self) -> Result<SystemVersion, AdminError> {
         self.operations.version().await.map_err(map_system_error)
     }

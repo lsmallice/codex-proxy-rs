@@ -23,6 +23,8 @@ use super::responses::{ContinuationIntent, DecodedResponsesRequest};
 /// OpenAI HTTP/WS adapter 共享的 Core 与连接生命周期能力
 #[derive(Clone)]
 pub(crate) struct OpenAiService {
+    responses_compatibility: super::responses::ResponsesIngressCompatibility,
+    responses_policy_source: Option<super::responses::ResponsesPolicySource>,
     execution: Arc<dyn ExecutionService>,
     lifecycle: Arc<dyn ConnectionLifecycle>,
 }
@@ -38,9 +40,30 @@ impl OpenAiService {
         lifecycle: Arc<dyn ConnectionLifecycle>,
     ) -> Self {
         Self {
+            responses_policy_source: None,
+            responses_compatibility: super::responses::ResponsesIngressCompatibility {
+                min_output_tokens_16: false,
+                tool_structure: false,
+            },
             execution,
             lifecycle,
         }
+    }
+
+    pub(crate) fn with_responses_compatibility(
+        mut self,
+        policy: super::responses::ResponsesIngressCompatibility,
+    ) -> Self {
+        self.responses_compatibility = policy;
+        self
+    }
+
+    pub(crate) fn with_responses_policy_source(
+        mut self,
+        source: Option<super::responses::ResponsesPolicySource>,
+    ) -> Self {
+        self.responses_policy_source = source;
+        self
     }
 
     pub(crate) async fn authenticate(
@@ -97,6 +120,16 @@ impl OpenAiService {
         endpoint: &'static str,
     ) -> Result<StartedExecution, GatewayError> {
         let (operation, metadata) = request.into_parts();
+        let (operation, compatibility) = match &self.responses_policy_source {
+            Some(source) => source.freeze(operation)?,
+            None => (operation, self.responses_compatibility),
+        };
+        let (operation, normalized_tools, minimum) =
+            if matches!(endpoint, "/v1/responses" | "/responses") {
+                super::responses::prepare_compatibility(operation, compatibility)?
+            } else {
+                (operation, 0, false)
+            };
         let public_model = PublicModelId::from_client_wire(metadata.requested_model().to_owned())
             .map_err(|_| {
             GatewayError::new(
@@ -110,7 +143,8 @@ impl OpenAiService {
                 Some(PreviousResponseId::new(value.clone()))
             }
         };
-        self.execution
+        let started = self
+            .execution
             .start_prepared(
                 prepared,
                 PreparedExecutionRequest {
@@ -127,7 +161,11 @@ impl OpenAiService {
                     },
                 },
             )
-            .await
+            .await?;
+        if normalized_tools > 0 || minimum {
+            started.session.trace().record("request.compatibility.ingress", serde_json::json!({"normalizedToolEntries":normalized_tools,"minimumOutputTokens":minimum}));
+        }
+        Ok(started)
     }
 
     pub(crate) async fn start_prepared_provider_endpoint(

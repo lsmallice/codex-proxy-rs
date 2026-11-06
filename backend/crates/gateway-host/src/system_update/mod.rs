@@ -10,6 +10,7 @@ mod installation;
 mod operations;
 mod process;
 mod release;
+mod source_preview;
 mod state;
 mod swap;
 mod swap_paths;

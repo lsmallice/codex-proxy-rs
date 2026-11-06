@@ -21,6 +21,14 @@ pub(super) async fn invoke(
     request: core::Request,
     next: core::Next,
 ) -> Result<core::Response, MiddlewareError> {
+    // 在创建回调资源和申请 RPC 名额之前筛选，不绕过其余层与原生鉴权
+    if entry.http_filter.as_ref().is_some_and(|routes| {
+        !routes
+            .iter()
+            .any(|route| route.matches(request.method().as_str(), request.uri().path()))
+    }) {
+        return next.run(request).await;
+    }
     let Some(ports) = &entry.invocation else {
         return if entry.failure_policy == PluginFailurePolicy::Delegate {
             next.run(request).await

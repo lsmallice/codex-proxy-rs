@@ -3,6 +3,7 @@ import appearance from './appearance.json'
 import auth from './auth.json'
 import common from './common.json'
 import dashboard from './dashboard.json'
+import forkSettings from './forkSettings.json'
 import groups from './groups.json'
 import keys from './keys.json'
 import navigation from './navigation.json'
@@ -21,6 +22,7 @@ export default {
   ...common,
   ...dashboard,
   ...groups,
+  ...forkSettings,
   ...keys,
   ...navigation,
   ...plugins,

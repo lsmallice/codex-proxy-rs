@@ -5,11 +5,15 @@ mod account_isolation;
 mod capacity;
 mod cookies;
 mod correlation;
+mod encrypted_history;
 mod error_details;
+mod hot_settings;
 mod image_model_access;
 mod model_account_eligibility;
+mod native_compatibility;
 mod opening_recovery;
 mod outbound;
+mod response_recovery;
 pub(super) use outbound::outbound_context;
 mod passthrough;
 mod precommit;
@@ -950,6 +954,17 @@ async fn capture_downstream_request(
     websocket: bool,
     lite: bool,
 ) -> Value {
+    capture_downstream_request_with_policy(original, api_key, websocket, lite, Default::default())
+        .await
+}
+
+async fn capture_downstream_request_with_policy(
+    original: Value,
+    api_key: bool,
+    websocket: bool,
+    lite: bool,
+    policy: provider_openai::config::CodexRequestCompatibility,
+) -> Value {
     let http = MockServer::start().await;
     let (base_url, websocket_server) = if websocket {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -1011,7 +1026,12 @@ async fn capture_downstream_request(
                 ),
             ])),
     ));
-    let provider = provider_with_base_url(&store, base_url);
+    let provider = Arc::new(
+        Arc::try_unwrap(provider_with_base_url(&store, base_url))
+            .ok()
+            .unwrap()
+            .with_request_compatibility(policy),
+    );
     let mut stream = provider
         .execute(
             planned_request("openai", operation),
@@ -1206,12 +1226,14 @@ fn provider_and_quota_with_affinity_and_base_url_and_leases(
     leases: Arc<TestLeaseCoordinator>,
     stream_max_retries: u32,
 ) -> (Arc<CodexProvider>, Arc<CodexCredentialQuotaService>) {
+    let mut config = provider_openai::OpenAiConfig::default();
+    config.stream_max_retries = u64::from(stream_max_retries);
     let (provider, quota, _) = provider_and_quota_with_runtime_ports(
         store,
         session_affinity,
         base_url,
         leases,
-        stream_max_retries,
+        &config,
         Arc::new(MemoryCooldownPort::new()),
         crate::support::runtime_policy(),
     );
@@ -1223,7 +1245,7 @@ fn provider_and_quota_with_runtime_ports(
     session_affinity: Arc<MemorySessionAffinity>,
     base_url: String,
     leases: Arc<TestLeaseCoordinator>,
-    stream_max_retries: u32,
+    config: &provider_openai::OpenAiConfig,
     cooldowns: Arc<MemoryCooldownPort>,
     policy: Arc<dyn gateway_core::provider_ports::ProviderRuntimePolicyPort>,
 ) -> (
@@ -1264,6 +1286,7 @@ fn provider_and_quota_with_runtime_ports(
         cooldowns,
         Arc::clone(&account_feedback),
         CodexCookiePolicy::official().expect("cookie policy"),
+        Duration::from_secs(config.model_unsupported_cooldown_seconds),
     ));
 
     let provider = CodexProvider::new(
@@ -1275,7 +1298,7 @@ fn provider_and_quota_with_runtime_ports(
         profile,
         base_url,
         Arc::clone(&websocket_pool),
-        stream_max_retries,
+        config.stream_max_retries(),
     )
     .expect("official OpenAI provider");
     (Arc::new(provider), quota, websocket_pool)
@@ -8773,12 +8796,29 @@ fn provider_with_cooldowns(
     base_url: String,
     cooldowns: Arc<MemoryCooldownPort>,
 ) -> (Arc<CodexProvider>, Arc<CodexWebSocketPool>) {
+    provider_with_model_cooldown(
+        store,
+        base_url,
+        cooldowns,
+        provider_openai::OpenAiConfig::default().model_unsupported_cooldown_seconds,
+    )
+}
+
+fn provider_with_model_cooldown(
+    store: &Arc<MemoryAccountStore>,
+    base_url: String,
+    cooldowns: Arc<MemoryCooldownPort>,
+    seconds: u64,
+) -> (Arc<CodexProvider>, Arc<CodexWebSocketPool>) {
+    let mut config = provider_openai::OpenAiConfig::default();
+    config.stream_max_retries = 0;
+    config.model_unsupported_cooldown_seconds = seconds;
     let (provider, _, pool) = provider_and_quota_with_runtime_ports(
         store,
         Arc::new(MemorySessionAffinity::default()),
         base_url,
         Arc::new(TestLeaseCoordinator::default()),
-        0,
+        &config,
         cooldowns,
         crate::support::runtime_policy(),
     );

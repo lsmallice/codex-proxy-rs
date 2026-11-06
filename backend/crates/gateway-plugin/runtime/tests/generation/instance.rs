@@ -662,6 +662,7 @@ fn compatibility_runtime(
             package_limits: Default::default(),
             rpc_limits: Default::default(),
             restart_circuit: Default::default(),
+            http_filters: Default::default(),
         },
         std::sync::Arc::new(gateway_host::outbound::HttpClient::new().unwrap()),
         std::sync::Arc::new(gateway_host::process::ProcessSupervisor::default()),

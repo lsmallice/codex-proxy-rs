@@ -367,6 +367,20 @@ impl ProcessSystemOperations {
 
 #[async_trait]
 impl SystemOperations for ProcessSystemOperations {
+    async fn source_preview(
+        &self,
+        source: gateway_admin::model::system::SystemReleaseSource,
+        channel: UpdateChannel,
+    ) -> Result<gateway_admin::model::system::SystemSourcePreview, OperationError> {
+        tokio::select! {
+            biased;
+            () = self.cancellation.cancelled() => Err(conflict("服务正在关闭")),
+            result = tokio::time::timeout(Duration::from_secs(30), super::source_preview::preview(&self.config, source, channel)) => {
+                result.map_err(|_| upstream("发行来源查询超时"))?
+            }
+        }
+    }
+
     async fn version(&self) -> Result<SystemVersion, OperationError> {
         let detail = self.update_detail(false, None).await?;
         Ok(SystemVersion {

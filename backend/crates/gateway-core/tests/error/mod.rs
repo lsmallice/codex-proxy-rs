@@ -10,6 +10,24 @@ use gateway_core::upstream::UpstreamSendState;
 use serde_json::json;
 
 #[test]
+fn prior_payload_send_cannot_be_hidden_by_a_later_opening_failure() {
+    let error = ProviderError::new(
+        ProviderErrorKind::PermissionDenied,
+        UpstreamSendState::NotSent,
+    )
+    .with_status(403)
+    .with_upstream_code(OpaqueUpstreamValue::new("permission_denied"))
+    .with_replay_safe()
+    .with_prior_payload_sent()
+    .with_retry_prohibited();
+    assert_eq!(error.send_state(), UpstreamSendState::Sent);
+    assert_eq!(error.upstream_status(), Some(403));
+    assert_eq!(error.upstream_code().unwrap().as_str(), "permission_denied");
+    assert!(!error.replay_is_safe());
+    assert!(error.retry_is_prohibited());
+}
+
+#[test]
 fn source_chain_survives_domain_conversion_and_snapshot_without_entering_formatting() {
     use gateway_core::error::{StoreError, StoreErrorKind};
     use gateway_core::provider_ports::{ProviderStoreError, ProviderStoreErrorKind};

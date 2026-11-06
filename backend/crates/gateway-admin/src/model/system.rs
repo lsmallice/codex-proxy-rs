@@ -3,6 +3,46 @@
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
+/// 只读发行来源查询的固定选项，不接受客户端提供的仓库或 URL
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SystemReleaseSource {
+    Fork,
+    Official,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SystemSourceCheckStatus {
+    Passed,
+    Blocked,
+    Pending,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SystemSourceCheck {
+    pub id: String,
+    pub status: SystemSourceCheckStatus,
+    pub message: String,
+}
+
+/// 元数据预检不构成安装授权，数据库和插件检查结果不能由版本号推断
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SystemSourcePreview {
+    pub source: SystemReleaseSource,
+    pub repository: String,
+    pub configured_repository: Option<String>,
+    pub channel: SystemUpdateChannel,
+    pub current_version: String,
+    pub latest_version: Option<String>,
+    pub release_url: Option<String>,
+    pub notes: Option<String>,
+    pub installation_allowed: bool,
+    pub checks: Vec<SystemSourceCheck>,
+}
+
 /// 本次检查或安装选择的更新稳定性范围，具体版本准入由 Host 判定
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "lowercase")]

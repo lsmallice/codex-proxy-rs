@@ -259,6 +259,9 @@ fn selector_with_runtime(
         cooldowns,
         account_feedback,
         CodexCookiePolicy::official().expect("official cookie policy"),
+        Duration::from_secs(
+            provider_openai::OpenAiConfig::default().model_unsupported_cooldown_seconds,
+        ),
     )
 }
 

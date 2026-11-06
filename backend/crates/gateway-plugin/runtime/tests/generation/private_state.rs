@@ -302,6 +302,7 @@ async fn observation_callbacks_use_typed_state_crud_and_reject_undeclared_namesp
             package_limits: PackageLimits::default(),
             rpc_limits: RpcLimits::default(),
             restart_circuit: Default::default(),
+            http_filters: Default::default(),
         },
         Arc::new(gateway_host::outbound::HttpClient::new().unwrap()),
         Arc::new(gateway_host::process::ProcessSupervisor::new(

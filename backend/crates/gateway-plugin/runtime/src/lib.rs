@@ -7,6 +7,8 @@ mod deprecation;
 mod generation;
 mod package;
 mod rpc;
+mod settings;
+pub use settings::{PluginHttpRoute, PluginRpcSettings, PluginStartupConfig};
 
 pub use adapter::command_line::{PluginCommandError, PluginCommandOutput, PluginCommandSession};
 pub use generation::{PluginRestartCircuitConfig, PluginRuntime, PluginRuntimeConfig};

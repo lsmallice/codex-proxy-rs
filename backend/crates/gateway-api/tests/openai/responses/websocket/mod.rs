@@ -1115,6 +1115,8 @@ async fn websocket_disconnect_during_core_settlement_finishes_charge_before_rele
     let admin = crate::admin::AdminTestFixture::new().await;
     let app = gateway_api::initialize(
         gateway_api::ApiConfig {
+            responses_policy_source: None,
+            responses_compatibility: Default::default(),
             asset_directory: std::env::temp_dir(),
             cors_allowed_origins: Vec::new(),
             request_timeout_seconds: None,

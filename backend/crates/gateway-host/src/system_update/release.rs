@@ -123,11 +123,52 @@ pub(crate) async fn fetch_latest(
     current_version: &str,
     channel: UpdateChannel,
 ) -> Result<Option<GitHubRelease>, OperationError> {
+    let current = semver::Version::parse(&normalize_version(current_version))
+        .map_err(|_| invalid("当前版本号无效，无法检查更新"))?;
+    fetch_matching_release(
+        api_base,
+        repository,
+        |release| eligible_release_version(release, &current, channel),
+        usize::MAX,
+    )
+    .await
+}
+
+/// 来源预览可以展示较旧版本供比较，但不能将其变为可安装候选
+pub(super) async fn fetch_preview_release(
+    api_base: &str,
+    repository: &str,
+    current_version: &str,
+    channel: UpdateChannel,
+) -> Result<Option<GitHubRelease>, OperationError> {
+    let current = semver::Version::parse(&normalize_version(current_version))
+        .map_err(|_| invalid("当前版本号无效，无法预检"))?;
+    fetch_matching_release(
+        api_base,
+        repository,
+        |release| {
+            let version = semver::Version::parse(&normalize_version(&release.tag_name)).ok()?;
+            let target_channel = channel_for_version(&version)?;
+            (!release.draft
+                && release.prerelease != version.pre.is_empty()
+                && version.major == current.major
+                && ordinary_channel_accepts(channel, target_channel))
+            .then_some(version)
+        },
+        10,
+    )
+    .await
+}
+
+async fn fetch_matching_release(
+    api_base: &str,
+    repository: &str,
+    eligible: impl Fn(&GitHubRelease) -> Option<semver::Version>,
+    max_pages: usize,
+) -> Result<Option<GitHubRelease>, OperationError> {
     validate_api_base(api_base).map_err(conflict)?;
     validate_repository(repository)?;
     let base = api_base.trim_end_matches('/');
-    let current = semver::Version::parse(&normalize_version(current_version))
-        .map_err(|_| invalid("当前版本号无效，无法检查更新"))?;
     let client = reqwest::Client::builder()
         .timeout(Duration::from_secs(30))
         .redirect(reqwest::redirect::Policy::none())
@@ -145,7 +186,7 @@ pub(crate) async fn fetch_latest(
         .await?;
         let last_page = releases.len() < 100;
         for release in releases {
-            let Some(version) = eligible_release_version(&release, &current, channel) else {
+            let Some(version) = eligible(&release) else {
                 continue;
             };
             if latest
@@ -157,6 +198,9 @@ pub(crate) async fn fetch_latest(
         }
         if last_page {
             return Ok(latest.map(|(_, release)| release));
+        }
+        if page >= max_pages {
+            return Err(upstream("发行列表超出预检范围，无法确认最新版本"));
         }
         page += 1;
     }
@@ -376,7 +420,7 @@ fn update_target_allowed(
     target: &semver::Version,
     selected: UpdateChannel,
 ) -> bool {
-    use UpdateChannel::{Alpha, Beta, Experimental, Rc, Stable};
+    use UpdateChannel::Experimental;
     if current.major != target.major || !target.cmp_precedence(current).is_gt() {
         return false;
     }
@@ -392,6 +436,11 @@ fn update_target_allowed(
             && target_channel == Experimental
             && (current.minor, current.patch) == (target.minor, target.patch);
     }
+    ordinary_channel_accepts(selected, target_channel)
+}
+
+fn ordinary_channel_accepts(selected: UpdateChannel, target_channel: UpdateChannel) -> bool {
+    use UpdateChannel::{Alpha, Beta, Rc, Stable};
     matches!(
         (selected, target_channel),
         (Stable, Stable)
