@@ -60,6 +60,8 @@ export interface SystemUpdateDetail {
   updateSupported: boolean
   unsupportedReason: string | null
   warning: string | null
+  retryAt: string | null
+  retryAtDisplay: string | null
 }
 
 export interface SystemUpdateAccepted {
@@ -101,6 +103,7 @@ export function getSystemVersion(options: RequestOptions = {}) {
 }
 
 interface SystemUpdateDetailQuery {
+  summaryOnly?: boolean
   refresh?: boolean
   channel?: SystemUpdateChannel
 }
@@ -110,11 +113,12 @@ interface SystemUpdateTarget {
   channel: SystemUpdateChannel
 }
 
-export function getSystemUpdateDetail(data: SystemUpdateDetailQuery) {
+export function getSystemUpdateDetail(data: SystemUpdateDetailQuery, options: RequestOptions = {}) {
   return request<SystemUpdateDetail>({
     url: '/api/admin/system/update/detail',
     method: 'GET',
     params: data,
+    ...options,
   })
 }
 

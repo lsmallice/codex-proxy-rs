@@ -391,8 +391,11 @@ pub(super) fn schedule_authoritative_quota_refresh_after_failure(
     quota: &Arc<CodexCredentialQuotaService>,
     account: &ProviderAccount,
 ) {
+    if !account.auto_use_quota_credits() {
+        return;
+    }
     // 限额错误可以确认账号状态，但 Responses 事件中的 used_percent 可能仍停在上一结算点
-    // usage 快照在后台补齐展示基线，不得撤销同一轮真实失败，也不能阻塞原始响应
+    // 后台查询可为后续请求确认点数，但不阻塞或重放原始请求
     // 随机等待 1–3 秒让上游结算再查询，避免多账号同时受限时补查完全同步；
     // 仍保持单次语义（一次 sleep + 一次查询），5 秒仅限制实际查询自身
     let quota = Arc::clone(quota);
@@ -1098,7 +1101,7 @@ pub(super) fn profile_diagnostic(
     use crate::transport::profile::selection::ClientProfileError;
     let code = match error {
         ClientProfileError::Invalid => "request_profile_invalid",
-        ClientProfileError::InvalidInstallationId => "request_profile_installation_id_invalid",
+        ClientProfileError::InvalidInstallationSeed => "request_profile_installation_seed_invalid",
         ClientProfileError::InvalidUserAgent => "request_profile_user_agent_invalid",
         ClientProfileError::CompanionHeadersRequired => "request_profile_headers_required",
         ClientProfileError::CompanionHeadersConflict => "request_profile_headers_conflict",

@@ -205,6 +205,7 @@ impl ProviderAdmin for OpenAiAdminProvider {
     ) -> gateway_admin::model::accounts::ProviderAccountCapabilities {
         let oauth = authentication_kind == crate::credential::CODEX_AUTHENTICATION_KIND_OAUTH;
         gateway_admin::model::accounts::ProviderAccountCapabilities {
+            quota_credits: oauth,
             quota: oauth,
             quota_refresh: oauth,
             profile: oauth,
@@ -233,11 +234,11 @@ impl ProviderAdmin for OpenAiAdminProvider {
     ) -> Result<gateway_core::account::OpaqueProviderData, ProviderAdminError> {
         if configuration
             .expose_to_provider()
-            .contains_key("installationId")
+            .contains_key("installationSeed")
             || gateway_core::settings::request_profiles::inherited_fields(configuration).is_some()
         {
             return Err(provider_admin_error(ProviderAdminErrorKind::Invalid)
-                .with_public_message("安装 ID 只能在 API 密钥中设置"));
+                .with_public_message("安装身份种子只能在 API 密钥中设置"));
         }
         self.profile
             .preview_selection(configuration)
@@ -1151,6 +1152,7 @@ fn account_from_record(account: &AccountRecord) -> Result<ProviderAccount, Provi
         revision,
         account.access_token_expires_at.map(SystemTime::from),
     )
+    .with_auto_use_quota_credits(account.auto_use_quota_credits)
     .with_outbound_proxy(account.outbound_proxy.clone())
     .with_notes(account.notes.clone())
     .with_profile(
@@ -2123,7 +2125,7 @@ fn map_client_profile_error(
     use crate::transport::profile::selection::ClientProfileError;
     let message = match error {
         ClientProfileError::Invalid => "客户端身份字段或版本组合不合法",
-        ClientProfileError::InvalidInstallationId => "安装 ID 必须是带连字符的 UUID",
+        ClientProfileError::InvalidInstallationSeed => "安装身份种子必须是带连字符的 UUID",
         ClientProfileError::InvalidUserAgent => {
             "User-Agent 必须是 1 至 4096 字节的单行 ASCII 文本，且首尾不能含空白"
         }

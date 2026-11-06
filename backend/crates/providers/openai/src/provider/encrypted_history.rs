@@ -120,6 +120,7 @@ impl Attempt {
     pub(super) fn prepare(
         request: &CodexResponsesRequest,
         account: &ProviderAccount,
+        installation_id: &str,
         session: Option<&ProviderSessionAffinityKey>,
         cache: Arc<Cache>,
     ) -> Option<Self> {
@@ -145,6 +146,7 @@ impl Attempt {
             for part in [
                 session.expose_to_store(),
                 account.id().as_str(),
+                installation_id,
                 revision.as_str(),
                 request
                     .body()

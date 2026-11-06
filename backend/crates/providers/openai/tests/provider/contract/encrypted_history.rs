@@ -340,7 +340,14 @@ async fn encrypted_repair_failure_does_not_stack_another_recovery() {
 
 #[tokio::test]
 async fn encrypted_cache_is_session_scoped_bounded_and_expires() {
-    for scenario in ["session", "key", "capacity", "digests", "expiry"] {
+    for scenario in [
+        "session",
+        "key",
+        "installation",
+        "capacity",
+        "digests",
+        "expiry",
+    ] {
         let store = Arc::new(MemoryAccountStore::default());
         create_account(&store, "acct_provider_contract").await;
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -408,6 +415,17 @@ async fn encrypted_cache_is_session_scoped_bounded_and_expires() {
                     .with_account_scope(contract_account_scope()),
                 None,
                 CancellationToken::new(),
+            )
+        } else if scenario == "installation" {
+            let configuration = gateway_core::account::OpaqueProviderData::new(json!({
+                "mode":"custom", "userAgent":"codex-tui/1.0.0", "installationSeed":KEY_INSTALLATION_SEED
+            }).as_object().unwrap().clone());
+            let profile = provider.resolve_request_profile(&configuration).unwrap();
+            context_with_state_owner_and_profile(
+                "req_changed_identity",
+                "acct_provider_contract",
+                None,
+                Some(profile),
             )
         } else {
             context("req_capacity", CancellationToken::new())

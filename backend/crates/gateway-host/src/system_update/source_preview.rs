@@ -1,9 +1,6 @@
 //! 固定发行来源的只读查询与切换前置条件，不下载包或修改安装状态
-use super::download::{MAX_CHECKSUM_SIZE, MAX_DOWNLOAD_SIZE};
-use super::release::{
-    fetch_preview_release, select_archive, validate_download_url, validate_repository,
-    validate_update_target,
-};
+use super::metadata::{Metadata, published_version};
+use super::release::{validate_api_base, validate_repository, validate_update_target};
 use super::{OperationError, SystemUpdateConfig, invalid};
 use gateway_admin::model::system::{
     SystemReleaseSource, SystemSourceCheck, SystemSourceCheckStatus as Status, SystemSourcePreview,
@@ -22,13 +19,21 @@ pub(super) async fn preview(
         SystemReleaseSource::Fork => "lsmallice/codex-proxy-rs",
         SystemReleaseSource::Official => "zyycn/codex-proxy-rs",
     };
-    let release = fetch_preview_release(
-        &config.github_api_base,
-        repository,
-        &config.version,
-        channel,
-    )
-    .await?;
+    validate_api_base(&config.github_api_base).map_err(invalid)?;
+    let mut preview_config = config.clone();
+    preview_config.update_repository = Some(repository.to_owned());
+    let metadata = Metadata::default();
+    let index = metadata.index(&preview_config).await?;
+    let current = semver::Version::parse(config.version.trim_start_matches('v'))
+        .map_err(|_| invalid("当前版本号无效"))?;
+    let target = published_version(&index, &current, channel)?;
+    let tag = format!("v{target}");
+    let release = metadata.by_tag(&preview_config, &tag).await?;
+    if release.as_ref().is_some_and(|release| {
+        release.tag_name != tag || release.draft || release.prerelease == target.pre.is_empty()
+    }) {
+        return Err(super::upstream("GitHub 发行身份与发布索引不符"));
+    }
     let latest = release
         .as_ref()
         .map(|r| r.tag_name.trim().trim_start_matches('v').to_owned());
@@ -78,18 +83,9 @@ pub(super) async fn preview(
         .as_ref()
         .zip(latest.as_deref())
         .is_some_and(|(release, version)| {
-            select_archive(release, version).is_ok_and(|asset| {
-                asset.size > 0
-                    && asset.size <= MAX_DOWNLOAD_SIZE
-                    && validate_download_url(&asset.browser_download_url, &config.github_api_base)
-                        .is_ok()
-            }) && release.assets.iter().any(|asset| {
-                asset.name == "checksums.txt"
-                    && asset.size > 0
-                    && asset.size <= MAX_CHECKSUM_SIZE
-                    && validate_download_url(&asset.browser_download_url, &config.github_api_base)
-                        .is_ok()
-            })
+            release
+                .install_assets(version, &config.github_api_base)
+                .is_ok()
         });
     check(
         "assets",

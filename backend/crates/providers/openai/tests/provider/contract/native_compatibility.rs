@@ -12,6 +12,24 @@ fn policy() -> CodexRequestCompatibility {
 }
 
 #[tokio::test]
+async fn native_compatibility_applies_minimum_after_official_oauth_token_alias_normalization() {
+    for alias in ["max_tokens", "max_completion_tokens"] {
+        for enabled in [false, true] {
+            let mut body = json!({"model":"gpt-5.4","input":"hello","store":false});
+            body[alias] = json!(1);
+            let policy = CodexRequestCompatibility {
+                min_output_tokens_16: enabled,
+                ..Default::default()
+            };
+            let sent =
+                capture_downstream_request_with_policy(body, false, false, false, policy).await;
+            assert!(sent.get(alias).is_none());
+            assert_eq!(sent["max_output_tokens"], if enabled { 16 } else { 1 });
+        }
+    }
+}
+
+#[tokio::test]
 async fn native_compatibility_oauth_store_correction_keeps_native_continuation_scope_consistent() {
     let store = Arc::new(MemoryAccountStore::default());
     create_account(&store, "acct_provider_contract").await;

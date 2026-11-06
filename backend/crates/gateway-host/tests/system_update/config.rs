@@ -18,8 +18,27 @@ async fn configured_repository_controls_release_queries() {
             serde_json::from_value(configuration).expect("update configuration");
         let server = MockServer::start().await;
         Mock::given(method("GET"))
-            .and(path(format!("/repos/{expected}/releases")))
-            .respond_with(release_response(TARGET_VERSION, Vec::new()))
+            .and(path(format!("/repos/{expected}/releases/tags/update-index")))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({"tag_name":"update-index","draft":false,"prerelease":true,"body":r#"{"current":"1.9.0"}"#})))
+            .expect(1).mount(&server).await;
+        Mock::given(method("GET"))
+            .and(path(format!(
+                "/{expected}/releases/download/v1.9.0/version.yaml"
+            )))
+            .respond_with(ResponseTemplate::new(200).set_body_string(format!(
+                "version: 1.9.0\npublished:\n  '1':\n    stable: {TARGET_VERSION}\n"
+            )))
+            .expect(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path(format!(
+                "/repos/{expected}/releases/tags/v{TARGET_VERSION}"
+            )))
+            .respond_with(release_response(
+                TARGET_VERSION,
+                available_assets(TARGET_VERSION),
+            ))
             .expect(1)
             .mount(&server)
             .await;
@@ -27,7 +46,10 @@ async fn configured_repository_controls_release_queries() {
         let mut config = fixture.config(&format!("{}/repos", server.uri()));
         config.update_repository = configured.update_repository;
         let service = ProcessSystemOperations::new(CancellationToken::new(), config);
-        let detail = service.update_detail(true, None).await.expect("detail");
+        let detail = service
+            .update_detail(SystemUpdateCheck::Refresh, None)
+            .await
+            .expect("detail");
         assert!(detail.update_supported);
         assert!(detail.has_update);
         assert_eq!(detail.latest_version, TARGET_VERSION);

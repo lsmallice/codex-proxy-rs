@@ -1,4 +1,4 @@
-//! 验证固定发行来源、通道筛选、明确未知项与只读预检边界
+//! 验证来源预检使用固定索引和精确 tag，不改变安装状态
 use super::*;
 use gateway_admin::model::system::{
     SystemReleaseSource as Source, SystemSourceCheckStatus as Status,
@@ -6,10 +6,20 @@ use gateway_admin::model::system::{
 };
 
 fn release(version: &str, url: &str) -> serde_json::Value {
-    serde_json::json!({"tag_name":format!("v{version}"),"prerelease":version.contains('-'),"body":"release notes","assets":[
+    serde_json::json!({"tag_name":format!("v{version}"),"draft":false,"prerelease":version.contains('-'),"body":"release notes","assets":[
         {"name":archive_name(version),"browser_download_url":format!("{url}/archive"),"size":128},
         {"name":"checksums.txt","browser_download_url":format!("{url}/checksums"),"size":100}
     ]})
+}
+
+async fn index(server: &MockServer, repository: &str, stable: &str, rc: &str, beta: &str) {
+    Mock::given(method("GET")).and(path(format!("/repos/{repository}/releases/tags/update-index")))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "tag_name":"update-index","draft":false,"prerelease":true,"body":r#"{"current":"1.9.0"}"#
+        }))).mount(server).await;
+    Mock::given(method("GET")).and(path(format!("/{repository}/releases/download/v1.9.0/version.yaml")))
+        .respond_with(ResponseTemplate::new(200).set_body_string(format!("version: 1.9.0\npublished:\n  '1':\n    stable: {stable}\n    rc: {rc}\n    beta: {beta}\n")))
+        .mount(server).await;
 }
 
 #[tokio::test]
@@ -20,11 +30,12 @@ async fn sources_are_isolated_and_preview_never_changes_installation_or_authoriz
         (Source::Official, "zyycn/codex-proxy-rs", "1.0.0"),
         (Source::Fork, "lsmallice/codex-proxy-rs", "1.2.0"),
     ] {
+        index(&server, repository, version, version, version).await;
         Mock::given(method("GET"))
-            .and(path(format!("/repos/{repository}/releases")))
-            .respond_with(
-                ResponseTemplate::new(200).set_body_json(vec![release(version, &server.uri())]),
-            )
+            .and(path(format!(
+                "/repos/{repository}/releases/tags/v{version}"
+            )))
+            .respond_with(ResponseTemplate::new(200).set_body_json(release(version, &server.uri())))
             .expect(1)
             .mount(&server)
             .await;
@@ -73,33 +84,28 @@ async fn sources_are_isolated_and_preview_never_changes_installation_or_authoriz
             "old-binary"
         );
     }
-    assert!(
-        server
-            .received_requests()
-            .await
-            .unwrap()
-            .iter()
-            .all(|r| r.url.path().ends_with("/releases"))
-    );
+    let requests = server.received_requests().await.unwrap();
+    assert_eq!(requests.len(), 6);
+    assert!(requests.iter().all(
+        |r| r.url.path().contains("/releases/tags/") || r.url.path().ends_with("/version.yaml")
+    ));
 }
 
 #[tokio::test]
 async fn development_builds_can_browse_but_cannot_bypass_version_checks() {
     let server = MockServer::start().await;
     let fixture = Fixture::new();
-    let mut draft = release("1.9.0", &server.uri());
-    draft["draft"] = serde_json::json!(true);
-    Mock::given(method("GET"))
-        .and(path("/repos/zyycn/codex-proxy-rs/releases"))
-        .respond_with(ResponseTemplate::new(200).set_body_json(vec![
-            release("1.0.0", &server.uri()),
-            release("1.2.0-rc.1", &server.uri()),
-            release("1.3.0-beta.1", &server.uri()),
-            release("2.0.0", &server.uri()),
-            draft,
-        ]))
-        .mount(&server)
-        .await;
+    let repository = "zyycn/codex-proxy-rs";
+    index(&server, repository, "1.0.0", "1.2.0-rc.1", "1.3.0-beta.1").await;
+    for version in ["1.0.0", "1.2.0-rc.1", "1.3.0-beta.1"] {
+        Mock::given(method("GET"))
+            .and(path(format!(
+                "/repos/{repository}/releases/tags/v{version}"
+            )))
+            .respond_with(ResponseTemplate::new(200).set_body_json(release(version, &server.uri())))
+            .mount(&server)
+            .await;
+    }
     let mut config = fixture.config(&format!("{}/repos", server.uri()));
     config.build_type = "dev".into();
     config.version = "1.1.0-local".into();
@@ -114,24 +120,12 @@ async fn development_builds_can_browse_but_cannot_bypass_version_checks() {
             .await
             .unwrap();
         assert_eq!(result.latest_version.as_deref(), Some(version));
-        assert_eq!(
-            result
-                .checks
-                .iter()
-                .find(|c| c.id == "build")
-                .unwrap()
-                .status,
-            Status::Blocked
-        );
-        assert_eq!(
-            result
-                .checks
-                .iter()
-                .find(|c| c.id == "version")
-                .unwrap()
-                .status,
-            Status::Blocked
-        );
+        for id in ["build", "version"] {
+            assert_eq!(
+                result.checks.iter().find(|c| c.id == id).unwrap().status,
+                Status::Blocked
+            );
+        }
     }
     assert!(
         service
@@ -142,28 +136,43 @@ async fn development_builds_can_browse_but_cannot_bypass_version_checks() {
 }
 
 #[tokio::test]
-async fn missing_assets_and_empty_releases_are_not_reported_ready_and_errors_are_not_empty_success()
-{
-    for (status, body) in [
-        (200, serde_json::json!([])),
-        (
-            200,
-            serde_json::json!([{"tag_name":"v1.1.0","prerelease":false,"assets":[]}]),
-        ),
-        (403, serde_json::json!({"message":"limited"})),
-    ] {
+async fn missing_assets_or_releases_are_blocked_and_invalid_identity_or_index_is_an_error() {
+    for scenario in ["missing", "assets", "limited", "identity"] {
         let server = MockServer::start().await;
         let fixture = Fixture::new();
-        Mock::given(method("GET"))
-            .and(path("/repos/lsmallice/codex-proxy-rs/releases"))
-            .respond_with(ResponseTemplate::new(status).set_body_json(body))
-            .mount(&server)
-            .await;
+        let repository = "lsmallice/codex-proxy-rs";
+        if scenario == "limited" {
+            Mock::given(method("GET"))
+                .and(path(format!(
+                    "/repos/{repository}/releases/tags/update-index"
+                )))
+                .respond_with(ResponseTemplate::new(403))
+                .mount(&server)
+                .await;
+        } else {
+            index(&server, repository, "1.2.0", "1.2.0", "1.2.0").await;
+            let mut data = release("1.2.0", &server.uri());
+            if scenario == "assets" {
+                data["assets"] = serde_json::json!([]);
+            }
+            if scenario == "identity" {
+                data["draft"] = serde_json::json!(true);
+            }
+            Mock::given(method("GET"))
+                .and(path(format!("/repos/{repository}/releases/tags/v1.2.0")))
+                .respond_with(if scenario == "missing" {
+                    ResponseTemplate::new(404)
+                } else {
+                    ResponseTemplate::new(200).set_body_json(data)
+                })
+                .mount(&server)
+                .await;
+        }
         let result = fixture
             .service(&server)
             .source_preview(Source::Fork, Channel::Stable)
             .await;
-        if status == 403 {
+        if matches!(scenario, "limited" | "identity") {
             assert!(result.is_err());
         } else {
             let result = result.unwrap();

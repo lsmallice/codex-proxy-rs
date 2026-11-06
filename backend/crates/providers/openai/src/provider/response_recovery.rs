@@ -126,30 +126,6 @@ fn replayable_new_request(request: &CodexResponsesRequest) -> bool {
     }
 }
 
-async fn account_unchanged(
-    selector: &CodexCredentialSelector,
-    quota: &CodexCredentialQuotaService,
-    account: &ProviderAccount,
-) -> bool {
-    if !quota
-        .cooldown(account.id())
-        .await
-        .is_ok_and(|cooldown| cooldown.is_none())
-    {
-        return false;
-    }
-    selector
-        .current_account(account.id())
-        .await
-        .is_ok_and(|current| {
-            current.enabled()
-                && current.revision() == account.revision()
-                && current.outbound_proxy() == account.outbound_proxy()
-                && current.credential_state() == gateway_core::account::CredentialState::Ready
-                && current.quota().access() != gateway_core::account::QuotaAccessState::Exhausted
-        })
-}
-
 fn prepend(
     response: &mut CodexBackendStreamingResponse,
     frames: Vec<Result<Bytes, CodexClientError>>,
@@ -205,7 +181,7 @@ pub(super) async fn create(
     if policy.full_history
         && full_history_verified
         && missing
-        && account_unchanged(selector, quota, account).await
+        && selector.response_recovery_allowed(account).await
     {
         let mut current = request.clone();
         current.set_previous_response_id(None);
@@ -293,7 +269,7 @@ pub(super) async fn create(
                             synchronize_passive_quota_headers(quota, account, &response.rate_limit_headers).await;
                             let updates = take_rate_limit_updates(response.rate_limit_updates.as_ref()).await;
                             synchronize_passive_quota_headers(quota, account, &rate_limit_update_headers(&updates)).await;
-                            account_unchanged(selector, quota, account).await
+                            selector.response_recovery_allowed(account).await
                         }=>allowed,
                     };
                     if allowed {
@@ -353,7 +329,7 @@ pub(super) async fn create(
                         ));
                 if !disconnect_replay
                     || !allowed
-                    || !account_unchanged(selector, quota, account).await
+                    || !selector.response_recovery_allowed(account).await
                 {
                     frames.push(Err(error));
                     prepend(response, frames);
@@ -369,7 +345,7 @@ pub(super) async fn create(
                     &rate_limit_update_headers(&updates),
                 )
                 .await;
-                if !account_unchanged(selector, quota, account).await
+                if !selector.response_recovery_allowed(account).await
                     || tokio::time::Instant::now() >= until
                     || cancellation.is_cancelled()
                     || deadline.is_elapsed()

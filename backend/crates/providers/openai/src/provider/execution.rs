@@ -331,9 +331,11 @@ impl CodexProvider {
         // Standalone Provider 端点没有可证明的账号 owner；Images/Search metadata 必须按
         // 跨账号输入收敛到当前 lease，不能沿用下游声明的账号或 installation identity
         let client = self.client_for_request(&context)?;
-        let installation_id = client
-            .profile_state()
-            .effective_installation_id(lease.installation_id());
+        let installation_id = client.profile_state().effective_installation_id(
+            context.client_api_key_ref(),
+            lease.account_id(),
+            lease.installation_id(),
+        );
         let turn_metadata = payload
             .context()
             .get("turn_metadata")
@@ -842,7 +844,7 @@ pub(super) fn cold_response_stream(response: ColdResponse) -> EventStream {
         let mut active_account = lease.account().clone();
         let encrypted = if ws_response_recovery.encrypted_history {
             response_recovery_slots.try_acquire().ok().and_then(|_permit| {
-                encrypted_history::Attempt::prepare(&request, &active_account, session_transport_key.as_ref(), rejected_ciphertexts)
+                encrypted_history::Attempt::prepare(&request, &active_account, &installation_id, session_transport_key.as_ref(), rejected_ciphertexts)
             })
         } else { None };
         let precleaned = encrypted.as_ref().map_or(0, |attempt| attempt.preclean(&mut request));

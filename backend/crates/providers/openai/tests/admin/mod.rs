@@ -169,7 +169,7 @@ async fn custom_identity_preview_and_dashboard_share_the_exact_request_profile()
 }
 
 #[tokio::test]
-async fn installation_id_is_optional_and_validated_only_for_key_profiles() {
+async fn installation_seed_is_optional_and_validated_only_for_key_profiles() {
     let bundle = provider_openai::initialize(
         valid_config().config,
         provider_ports(),
@@ -189,7 +189,7 @@ async fn installation_id_is_optional_and_validated_only_for_key_profiles() {
     ] {
         let configuration = OpaqueProviderData::new(
             json!({
-                "mode": "custom", "userAgent": "codex-tui/1.0.0", "installationId": value
+                "mode": "custom", "userAgent": "codex-tui/1.0.0", "installationSeed": value
             })
             .as_object()
             .unwrap()
@@ -199,7 +199,7 @@ async fn installation_id_is_optional_and_validated_only_for_key_profiles() {
         assert_eq!(preview.is_ok(), valid);
         if value == id {
             assert_eq!(
-                preview.unwrap().expose_to_provider()["configuration"]["installationId"],
+                preview.unwrap().expose_to_provider()["configuration"]["installationSeed"],
                 id.to_lowercase()
             );
             assert!(provider.preview_client_profile(&configuration).is_err());
@@ -208,14 +208,14 @@ async fn installation_id_is_optional_and_validated_only_for_key_profiles() {
     let doc =
         |value: serde_json::Value| OpaqueProviderData::new(value.as_object().unwrap().clone());
     let global = doc(json!({"mode": "custom", "userAgent": "codex-tui/2.0.0"}));
-    let key = doc(json!({"inherit":{"installationId":id}}));
+    let key = doc(json!({"inherit":{"installationSeed":id}}));
     let preview = provider
         .preview_key_client_profile(&key, Some(&global))
         .unwrap()
         .into_inner();
     assert_eq!(preview["userAgent"], "codex-tui/2.0.0");
     assert_eq!(
-        preview["configuration"]["installationId"],
+        preview["configuration"]["installationSeed"],
         id.to_lowercase()
     );
     assert!(provider.preview_client_profile(&key).is_err());
@@ -2178,6 +2178,7 @@ fn provider_ports_with_catalog(
 fn account_record(account: &ProviderAccount) -> AccountRecord {
     let now = Utc::now();
     AccountRecord {
+        auto_use_quota_credits: false,
         outbound_proxy_id: None,
         outbound_proxy_enabled: true,
         notes: None,
@@ -2350,6 +2351,21 @@ impl ProviderCredentialStatePort for TestCredentialState {
 struct TestCooldown;
 
 impl ProviderCooldownPort for TestCooldown {
+    fn read_many<'a>(
+        &'a self,
+        account_ids: &'a [ProviderAccountId],
+    ) -> BoxFuture<'a, Vec<Result<Option<ProviderCooldown>, ProviderStoreError>>> {
+        Box::pin(async move { account_ids.iter().map(|_| Ok(None)).collect() })
+    }
+
+    fn read_scoped_many<'a>(
+        &'a self,
+        account_ids: &'a [ProviderAccountId],
+        _scope: &'a ProviderCooldownScope,
+    ) -> BoxFuture<'a, Vec<Result<Option<ProviderScopedCooldown>, ProviderStoreError>>> {
+        Box::pin(async move { account_ids.iter().map(|_| Ok(None)).collect() })
+    }
+
     fn put_if_later(
         &self,
         _cooldown: ProviderCooldown,
