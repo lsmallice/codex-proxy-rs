@@ -21,6 +21,9 @@ use super::{
     stream::StreamIngress,
 };
 
+// 大批量取消仍需经同一 IPC 队列往返；业务权限已同步撤销，仅延长有界回收确认
+const CANCELLATION_ACK_GRACE: Duration = Duration::from_secs(2);
+
 pub(crate) struct Shared {
     state: Mutex<State>,
     started_at: Instant,
@@ -460,8 +463,14 @@ impl Shared {
         self.send_control(Frame::control(Message::Cancel { id }));
         let shared = Arc::clone(self);
         tokio::spawn(async move {
-            tokio::time::sleep(Duration::from_millis(250)).await;
+            tokio::time::sleep(CANCELLATION_ACK_GRACE).await;
             if shared.is_cancelling(id) {
+                tracing::warn!(
+                    event = "plugin.rpc.cancel_ack_timeout",
+                    call_id = id,
+                    grace_ms = CANCELLATION_ACK_GRACE.as_millis(),
+                    "插件取消确认超时，终止进程并回收调用"
+                );
                 shared.fail(error);
             }
         });

@@ -1678,6 +1678,11 @@ async fn main() {
                     "execution_cancelled_marker",
                     &json!({"call_id":id}),
                 );
+                if let Some(path) = peer.configuration["cancel_ack_gate"].as_str() {
+                    while !std::path::Path::new(path).exists() {
+                        tokio::time::sleep(Duration::from_millis(5)).await;
+                    }
+                }
                 peer.send(Message::Cancelled { id }, vec![]).await;
             }
             Message::Credit { id, bytes, frames } => {

@@ -823,13 +823,88 @@ async fn ignored_cancellation_closes_the_incarnation_and_settles_other_calls() {
     );
     let second = session.call(
         "hang",
-        session.context(Stage::Request, Duration::from_secs(2)),
+        session.context(Stage::Request, Duration::from_secs(10)),
         json!({}),
         vec![],
     );
-    let (first, second) = tokio::join!(first, second);
+    let (first, second) = tokio::time::timeout(Duration::from_secs(4), async {
+        tokio::join!(first, second)
+    })
+    .await
+    .expect("unresponsive cancellation must remain bounded");
     assert!(matches!(first, Err(RpcError::Timeout)));
     assert!(matches!(second, Err(RpcError::Timeout)));
+    assert!(!session.is_ready());
+    session.shutdown(Duration::from_secs(1)).await;
+}
+
+#[tokio::test]
+async fn delayed_cancellation_ack_keeps_lease_until_ack_and_preserves_session() {
+    let (cache, prepared, mut handshake, processes) = prepared_session();
+    let gate = cache.path().join("allow-cancel-ack");
+    handshake.configuration = json!({"cancel_ack_gate":gate});
+    let callbacks = Arc::new(LifecycleCallbacks::default());
+    let session = RpcSession::start(
+        prepared,
+        handshake,
+        RpcLimits {
+            maximum_calls: 1,
+            ..Default::default()
+        },
+        &processes,
+        callbacks.clone(),
+    )
+    .await
+    .unwrap();
+    let result = tokio::time::timeout(
+        Duration::from_secs(1),
+        session.call(
+            "hang",
+            session.context(Stage::Request, Duration::from_millis(100)),
+            json!({}),
+            vec![],
+        ),
+    )
+    .await
+    .expect("caller cancellation must not await peer acknowledgement");
+    assert!(matches!(result, Err(RpcError::Timeout)));
+    assert_eq!(callbacks.finished.load(Ordering::Relaxed), 1);
+    tokio::time::sleep(Duration::from_millis(400)).await;
+    assert!(
+        session.is_ready(),
+        "bounded acknowledgement delay must not kill a responsive peer"
+    );
+    assert!(matches!(
+        session
+            .call(
+                "echo",
+                session.context(Stage::Request, Duration::from_secs(2)),
+                json!({}),
+                vec![]
+            )
+            .await,
+        Err(RpcError::Overloaded)
+    ));
+    std::fs::write(gate, b"ready").unwrap();
+    tokio::time::timeout(Duration::from_secs(2), async {
+        loop {
+            match session
+                .call(
+                    "echo",
+                    session.context(Stage::Request, Duration::from_secs(2)),
+                    json!({}),
+                    vec![],
+                )
+                .await
+            {
+                Ok(_) => break,
+                Err(RpcError::Overloaded) => tokio::time::sleep(Duration::from_millis(5)).await,
+                Err(error) => panic!("unexpected cancellation failure: {error}"),
+            }
+        }
+    })
+    .await
+    .unwrap();
     session.shutdown(Duration::from_secs(1)).await;
 }
 
