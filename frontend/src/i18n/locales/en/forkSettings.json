@@ -21,7 +21,6 @@
     "refresh": "Reload",
     "undo": "Undo changes",
     "save": "Save settings",
-    "saved": "Fork settings saved",
     "restartNotice": "New requests use saved rules, in-flight requests retain their snapshot, plugin settings and cache capacity require restart",
     "loading": "Loading fork settings",
     "retry": "Reload",

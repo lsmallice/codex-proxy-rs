@@ -54,7 +54,9 @@ export function useForkSettings() {
         return
       accept(value)
       notification.success({
-        message: t(value.restartRequired ? 'forkSettings.savedPending' : 'forkSettings.savedActive'),
+        message: value.restartRequired
+          ? t('forkSettings.savedPending')
+          : t('forkSettings.savedActive'),
       })
     }
     catch {}

@@ -27,13 +27,28 @@ const methods = [
   'OPTIONS',
 ].map(value => ({ label: value, value }))
 const codes = [1000, 1001, 1011, 1012, 1013]
-const compatibilityFields = [
-  { key: 'lite_context', label: 'liteContext' },
-  { key: 'store_false', label: 'storeFalse' },
-  { key: 'json_object', label: 'jsonObject' },
-  { key: 'min_output_tokens_16', label: 'minOutputTokens' },
-  { key: 'tool_structure', label: 'toolStructure' },
-] as const
+const compatibilityFields = computed(() => [
+  {
+    key: 'lite_context',
+    label: t('forkSettings.liteContext'),
+  },
+  {
+    key: 'store_false',
+    label: t('forkSettings.storeFalse'),
+  },
+  {
+    key: 'json_object',
+    label: t('forkSettings.jsonObject'),
+  },
+  {
+    key: 'min_output_tokens_16',
+    label: t('forkSettings.minOutputTokens'),
+  },
+  {
+    key: 'tool_structure',
+    label: t('forkSettings.toolStructure'),
+  },
+] as const)
 const rpcFields = computed(() => [
   {
     key: 'maximum_calls',
@@ -146,7 +161,7 @@ defineExpose({ hasChanges })
           </ZTag>
         </h2>
         <div class="mt-4 grid max-w-6xl gap-4.5 sm:grid-cols-2 xl:grid-cols-3">
-          <ZFormItem v-for="field in compatibilityFields" :key="field.key" :label="t(`forkSettings.${field.label}`)">
+          <ZFormItem v-for="field in compatibilityFields" :key="field.key" :label="field.label">
             <ZSwitch v-model="displayed.openai.request_compatibility[field.key]" :disabled="disabled" :label="t('forkSettings.enable')" />
           </ZFormItem>
         </div>
