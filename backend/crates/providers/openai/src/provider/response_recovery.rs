@@ -1,4 +1,4 @@
-//! 同账号租约内有界 WS 补发；历史恢复只接受宿主完成记录的逐项摘要证明
+//! 同账号 WS 恢复资格与预算；正常前导即时交付，历史恢复要求宿主摘要证明
 use super::*;
 use crate::transport::protocol::responses::is_replaceable_response_prelude;
 use sha2::{Digest, Sha256};
@@ -126,14 +126,6 @@ fn replayable_new_request(request: &CodexResponsesRequest) -> bool {
     }
 }
 
-fn prepend(
-    response: &mut CodexBackendStreamingResponse,
-    frames: Vec<Result<Bytes, CodexClientError>>,
-) {
-    let body = std::mem::replace(&mut response.body, Box::pin(futures::stream::empty()));
-    response.body = Box::pin(futures::stream::iter(frames).chain(body));
-}
-
 #[expect(clippy::too_many_arguments)]
 pub(super) async fn create(
     client: &CodexBackendClient,
@@ -147,16 +139,12 @@ pub(super) async fn create(
     policy: crate::config::CodexWsResponseRecovery,
     full_history_verified: bool,
     selector: &CodexCredentialSelector,
-    quota: &Arc<CodexCredentialQuotaService>,
     account: &ProviderAccount,
     slots: Arc<tokio::sync::Semaphore>,
     history_replayed: &mut bool,
-    payload_replayed: &mut bool,
-    encrypted: Option<&encrypted_history::Attempt>,
-    repaired_request: &mut Option<CodexResponsesRequest>,
 ) -> Result<CodexBackendStreamingResponse, CodexHandshakeAttemptError> {
     let trace = request_context.trace.cloned().unwrap_or_default();
-    let mut result = create_response_attempt(
+    let result = create_response_attempt(
         client,
         request,
         request_context,
@@ -170,7 +158,7 @@ pub(super) async fn create(
     if result.is_ok() {
         connection_budget.complete();
     }
-    if (!policy.enabled && !policy.full_history && encrypted.is_none()) || *recovery.1 {
+    if !policy.full_history || *recovery.1 {
         return result;
     }
     let Ok(_permit) = slots.try_acquire_owned() else {
@@ -204,178 +192,161 @@ pub(super) async fn create(
         )
         .await;
     }
-    let disconnect_replay = policy.enabled
-        && policy.max_retries > 0
-        && transport_requirement(request).allows_connection_restart()
-        && replayable_new_request(request);
-    if !disconnect_replay && encrypted.is_none() {
-        return result;
-    }
-    let mut frames = Vec::new();
-    let mut bytes = 0usize;
-    let mut inspected_frames = 0usize;
-    let mut retries = 0u32;
-    let max_retries = policy.max_retries.min(5);
-    // 整条恢复链共用窗口和检查量，不因再次建连获得新的缓冲预算
-    let until = tokio::time::Instant::now() + Duration::from_millis(policy.window_ms.min(10000));
-    loop {
-        let Ok(response) = result.as_mut() else {
-            return result;
-        };
-        if response.transport != CodexBackendTransport::WebSocket
-            || (retries > 0 && retries >= max_retries)
-        {
-            return result;
+    result
+}
+
+pub(super) struct StreamRecovery {
+    policy: crate::config::CodexWsResponseRecovery,
+    disconnect_replay: bool,
+    permit: Option<tokio::sync::OwnedSemaphorePermit>,
+    until: tokio::time::Instant,
+    bytes: usize,
+    frames: usize,
+    retries: u32,
+}
+
+impl StreamRecovery {
+    pub(super) fn new(
+        request: &CodexResponsesRequest,
+        policy: crate::config::CodexWsResponseRecovery,
+        encrypted: bool,
+        slots: Arc<tokio::sync::Semaphore>,
+    ) -> Self {
+        let disconnect_replay = policy.enabled
+            && policy.max_retries > 0
+            && transport_requirement(request).allows_connection_restart()
+            && replayable_new_request(request);
+        Self {
+            until: tokio::time::Instant::now() + Duration::from_millis(policy.window_ms.min(10000)),
+            permit: (disconnect_replay || encrypted)
+                .then(|| slots.try_acquire_owned().ok())
+                .flatten(),
+            policy,
+            disconnect_replay,
+            bytes: 0,
+            frames: 0,
+            retries: 0,
         }
-        let next = tokio::select! {
-            biased;
-            _=cancellation.cancelled()=>{prepend(response,frames);return result;},
-            _=deadline.wait()=>{prepend(response,frames);return result;},
-            _=tokio::time::sleep_until(until)=>{prepend(response,frames);return result;},
-            chunk=response.body.next()=>chunk,
+    }
+
+    pub(super) fn close(&mut self) {
+        self.permit = None;
+    }
+
+    pub(super) async fn expired(&self) {
+        if self.permit.is_some() {
+            tokio::time::sleep_until(self.until).await;
+        } else {
+            futures::future::pending::<()>().await;
+        }
+    }
+
+    fn available(&mut self) -> bool {
+        if tokio::time::Instant::now() >= self.until {
+            self.close();
+        }
+        self.permit.is_some()
+    }
+
+    // 只检查本次收到的帧，不预读或保留前导；未知内容与计费事实单向关闭窗口
+    pub(super) fn inspect(
+        &mut self,
+        request: &CodexResponsesRequest,
+        chunk: &[u8],
+        encrypted: Option<&encrypted_history::Attempt>,
+    ) -> Option<CodexResponsesRequest> {
+        if !self.available() {
+            return None;
+        }
+        self.bytes = self.bytes.saturating_add(chunk.len());
+        self.frames += 1;
+        let value = (self.bytes <= self.policy.max_prefix_bytes.min(262144) && self.frames <= 32)
+            .then(|| serde_json::from_slice::<Value>(chunk).ok())
+            .flatten();
+        let Some(value) = value else {
+            self.close();
+            return None;
         };
-        match next {
-            Some(Ok(chunk)) => {
-                bytes = bytes.saturating_add(chunk.len());
-                inspected_frames += 1;
-                let in_budget =
-                    bytes <= policy.max_prefix_bytes.min(262144) && inspected_frames <= 32;
-                let value = in_budget
-                    .then(|| serde_json::from_slice::<Value>(&chunk).ok())
-                    .flatten();
-                let no_usage = value.as_ref().is_some_and(|value| {
-                    [value.get("usage"), value.pointer("/response/usage")]
-                        .iter()
-                        .all(|usage| usage.is_none_or(Value::is_null))
-                });
-                let no_output = value.as_ref().is_some_and(|value| {
-                    value
-                        .pointer("/response/output")
-                        .is_none_or(|output| output.as_array().is_some_and(Vec::is_empty))
-                });
-                if retries == 0
-                    && no_usage
-                    && no_output
-                    && let Some(attempt) = encrypted
-                    && let Some(index) = attempt.observe(request, &chunk)
-                    && let Some(current) = attempt.repaired(request, index)
-                {
-                    let allowed = tokio::select! {
-                        biased;
-                        _=cancellation.cancelled()=>false,
-                        _=deadline.wait()=>false,
-                        _=tokio::time::sleep_until(until)=>false,
-                        allowed=async {
-                            synchronize_passive_quota_headers(quota, account, &response.rate_limit_headers).await;
-                            let updates = take_rate_limit_updates(response.rate_limit_updates.as_ref()).await;
-                            synchronize_passive_quota_headers(quota, account, &rate_limit_update_headers(&updates)).await;
-                            selector.response_recovery_allowed(account).await
-                        }=>allowed,
-                    };
-                    if allowed {
-                        trace.record(
-                            "transport.encrypted_history.replay",
-                            json!({"replay":1,"bufferedBytes":bytes,"lossy":true}),
-                        );
-                        drop(result);
-                        *recovery.1 = true;
-                        *payload_replayed = true;
-                        request_context.turn_state = None;
-                        *repaired_request = Some(current);
-                        return create_response_attempt(
-                            client,
-                            repaired_request.as_ref().expect("repaired request"),
-                            request_context,
-                            account_id,
-                            deadline,
-                            cancellation,
-                            (crate::config::CodexWsOpeningRecovery::default(), recovery.1),
-                        )
-                        .await;
-                    }
-                }
-                let safe = no_usage
-                    && value.as_ref().is_some_and(|value| {
-                        value
-                            .get("type")
-                            .and_then(Value::as_str)
-                            .is_some_and(|event| is_replaceable_response_prelude(event, value))
-                    });
-                frames.push(Ok(chunk));
-                if !safe {
-                    prepend(response, frames);
-                    return result;
-                }
-            }
-            Some(Err(error)) => {
-                let (code, reason) = match &error {
-                    CodexClientError::WebSocket(error) => (
-                        error.close_before_terminal().and_then(|c| c.code()),
-                        error.transport_failure_reason(),
-                    ),
-                    _ => (None, None),
-                };
-                let allowed = code.is_some_and(|code| policy.close_codes.contains(&code))
-                    || (policy.disconnects
-                        && matches!(
-                            reason,
-                            Some(
-                                "reset_without_closing_handshake"
-                                    | "tcp_reset"
-                                    | "connection_aborted"
-                                    | "broken_pipe"
-                                    | "unexpected_eof"
-                            )
-                        ));
-                if !disconnect_replay
-                    || !allowed
-                    || !selector.response_recovery_allowed(account).await
-                {
-                    frames.push(Err(error));
-                    prepend(response, frames);
-                    return result;
-                }
-                // 保留第一轮真实额度观测，再决定是否还能复用账号；不将旧前导交给客户端
-                synchronize_passive_quota_headers(quota, account, &response.rate_limit_headers)
-                    .await;
-                let updates = take_rate_limit_updates(response.rate_limit_updates.as_ref()).await;
-                synchronize_passive_quota_headers(
-                    quota,
-                    account,
-                    &rate_limit_update_headers(&updates),
-                )
-                .await;
-                if !selector.response_recovery_allowed(account).await
-                    || tokio::time::Instant::now() >= until
-                    || cancellation.is_cancelled()
-                    || deadline.is_elapsed()
-                {
-                    frames.push(Err(error));
-                    prepend(response, frames);
-                    return result;
-                }
-                retries += 1;
-                trace.record("transport.response_recovery.replay",json!({"closeCode":code,"failureReason":reason,"bufferedBytes":bytes,"replay":retries,"maxRetries":max_retries,"possibleDuplicateExecution":true}));
-                // 原流的 drop 触发原生池清理，不清整账号连接、不切换账号或代理
-                drop(result);
-                frames.clear();
-                *recovery.1 = true;
-                *payload_replayed = true;
-                result = create_response_attempt(
-                    client,
-                    request,
-                    request_context,
-                    account_id,
-                    deadline,
-                    cancellation,
-                    (crate::config::CodexWsOpeningRecovery::default(), recovery.1),
-                )
-                .await;
-            }
-            None => {
-                prepend(response, frames);
-                return result;
-            }
+        let no_usage = [value.get("usage"), value.pointer("/response/usage")]
+            .iter()
+            .all(|usage| usage.is_none_or(Value::is_null));
+        let no_output = value
+            .pointer("/response/output")
+            .is_none_or(|output| output.as_array().is_some_and(Vec::is_empty));
+        if self.retries == 0
+            && no_usage
+            && no_output
+            && let Some(attempt) = encrypted
+            && let Some(index) = attempt.observe(request, chunk)
+            && let Some(repaired) = attempt.repaired(request, index)
+        {
+            return Some(repaired);
+        }
+        if !no_usage
+            || !value
+                .get("type")
+                .and_then(Value::as_str)
+                .is_some_and(|event| is_replaceable_response_prelude(event, &value))
+        {
+            self.close();
+        }
+        None
+    }
+
+    pub(super) fn disconnect(&mut self, error: &CodexClientError) -> Option<Value> {
+        if !self.available()
+            || !self.disconnect_replay
+            || self.retries >= self.policy.max_retries.min(5)
+        {
+            return None;
+        }
+        let CodexClientError::WebSocket(error) = error else {
+            return None;
+        };
+        let code = error.close_before_terminal().and_then(|c| c.code());
+        let reason = error.transport_failure_reason();
+        let allowed = code.is_some_and(|code| self.policy.close_codes.contains(&code))
+            || (self.policy.disconnects
+                && matches!(
+                    reason,
+                    Some(
+                        "reset_without_closing_handshake"
+                            | "tcp_reset"
+                            | "connection_aborted"
+                            | "broken_pipe"
+                            | "unexpected_eof"
+                    )
+                ));
+        allowed.then(|| json!({"closeCode":code,"failureReason":reason,"replay":self.retries + 1,"maxRetries":self.policy.max_retries.min(5),"possibleDuplicateExecution":true}))
+    }
+
+    pub(super) fn replayed(&mut self, encrypted: bool) {
+        self.retries += 1;
+        if encrypted || self.retries >= self.policy.max_retries.min(5) {
+            self.close();
+        }
+    }
+
+    pub(super) async fn allowed(
+        &mut self,
+        selector: &CodexCredentialSelector,
+        quota: &Arc<CodexCredentialQuotaService>,
+        account: &ProviderAccount,
+        limits: &[ParsedRateLimits],
+        context: &AttemptContext,
+    ) -> bool {
+        if !self.available() {
+            return false;
+        }
+        tokio::select! {
+            biased;
+            _ = context.cancellation().cancelled() => false,
+            _ = context.deadline().wait() => false,
+            _ = tokio::time::sleep_until(self.until) => false,
+            allowed = async {
+                synchronize_passive_quota(quota, account, limits).await;
+                selector.response_recovery_allowed(account).await
+            } => allowed,
         }
     }
 }

@@ -65,6 +65,12 @@ pub(super) enum OpenAiResponseTerminal {
 }
 
 impl OpenAiResponseObservationState {
+    pub(super) fn inherit_first_delivery(&mut self, previous: &Self) {
+        // 前导已交付，补发不能把首包时间改成后续响应的到达时间
+        self.timings.first_event_ms = previous.timings.first_event_ms;
+        self.timings.first_token_ms = previous.timings.first_token_ms;
+    }
+
     pub(super) fn from_backend_response(
         response: &CodexBackendStreamingResponse,
         request: &CodexResponsesRequest,

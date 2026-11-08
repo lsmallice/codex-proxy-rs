@@ -1,4 +1,4 @@
-//! 验证未交付前导的有界 WS 补发、预算退出及可信完整历史续接恢复
+//! 验证前导即时交付、有界 WS 补发与可信完整历史续接恢复
 use super::*;
 use gateway_core::event::ProviderEvent;
 use provider_openai::config::CodexWsResponseRecovery;
@@ -73,7 +73,106 @@ pub(super) async fn collect(
 }
 
 #[tokio::test]
-async fn empty_prelude_then_close_replays_once_without_exposing_first_response() {
+async fn recovery_forwards_first_event_before_upstream_is_allowed_to_continue() {
+    for retry in [false, true] {
+        let store = Arc::new(MemoryAccountStore::default());
+        create_account(&store, "acct_provider_contract").await;
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let base = format!("http://{}", listener.local_addr().unwrap());
+        let (delivered, received) = tokio::sync::oneshot::channel();
+        let server = tokio::spawn(async move {
+            let (socket, _) = listener.accept().await.unwrap();
+            let mut ws = accept_codex_test_websocket(socket).await;
+            ws.next().await.unwrap().unwrap();
+            ws.send(Message::Text(
+                json!({"type":"codex.response.metadata","metadata":{}})
+                    .to_string()
+                    .into(),
+            ))
+            .await
+            .unwrap();
+            // 后续输出依赖客户端已收到首包，缓冲实现会在这里死等到检查窗口结束
+            received.await.unwrap();
+            if retry {
+                ws.close(Some(CloseFrame {
+                    code: CloseCode::Restart,
+                    reason: "".into(),
+                }))
+                .await
+                .unwrap();
+                let (socket, _) = listener.accept().await.unwrap();
+                ws = accept_codex_test_websocket(socket).await;
+                ws.next().await.unwrap().unwrap();
+            }
+            ws.send(Message::Text(
+                completed("resp_immediate").to_string().into(),
+            ))
+            .await
+            .unwrap();
+        });
+        let provider = configured(
+            &store,
+            base,
+            CodexWsResponseRecovery {
+                window_ms: 5000,
+                ..policy()
+            },
+        );
+        let mut stream = provider
+            .execute(
+                planned_request("openai", request(json!("hello"), None, None)),
+                context("req_first_event", CancellationToken::new()),
+            )
+            .await
+            .unwrap();
+        let mut first_timing = None;
+        let first = timeout(Duration::from_secs(2), async {
+            loop {
+                let event = stream.next().await.unwrap().unwrap();
+                if let Some(observation) = event.response_observation()
+                    && let Some(ms) = observation.timings().first_event_ms
+                {
+                    first_timing = Some(ms);
+                }
+                if event.wire_event().is_some() {
+                    break event;
+                }
+            }
+        })
+        .await
+        .expect("first event must not await the recovery window or later output");
+        assert_eq!(
+            first.wire_event().unwrap().event_type(),
+            Some("codex.response.metadata")
+        );
+        assert!(first.is_replayable_prelude());
+        assert!(first_timing.is_some());
+        delivered.send(()).unwrap();
+        let mut completions = 0;
+        while let Some(event) = timeout(Duration::from_secs(3), stream.next())
+            .await
+            .unwrap()
+        {
+            let event = event.unwrap();
+            if let Some(observation) = event.response_observation() {
+                assert_eq!(observation.timings().first_event_ms, first_timing);
+            }
+            completions += usize::from(
+                event
+                    .wire_event()
+                    .is_some_and(|w| w.event_type() == Some("response.completed")),
+            );
+        }
+        assert_eq!(completions, 1);
+        timeout(Duration::from_secs(3), server)
+            .await
+            .unwrap()
+            .unwrap();
+    }
+}
+
+#[tokio::test]
+async fn empty_prelude_then_close_replays_once_after_forwarding_replaceable_events() {
     for code in [1000u16, 1011, 1012, 0] {
         let store = Arc::new(MemoryAccountStore::default());
         create_account(&store, "acct_provider_contract").await;
@@ -124,10 +223,18 @@ async fn empty_prelude_then_close_replays_once_without_exposing_first_response()
             e.wire_event()
                 .is_some_and(|w| w.event_type() == Some("response.completed"))
         }));
-        assert!(!events.iter().any(|e| {
+        assert!(events.iter().any(|e| {
             e.wire_event()
                 .is_some_and(|w| w.data().to_string().contains("resp_discard"))
         }));
+        assert!(
+            events
+                .iter()
+                .filter(|e| e
+                    .wire_event()
+                    .is_some_and(|w| w.data().to_string().contains("resp_discard")))
+                .all(ProviderEvent::is_replayable_prelude)
+        );
         timeout(Duration::from_secs(6), server)
             .await
             .unwrap()
@@ -146,6 +253,9 @@ async fn semantic_output_unknown_events_and_prefix_budget_prevent_replay() {
         "time",
         "disabled",
         "tools",
+        "usage",
+        "frames",
+        "middleware",
     ] {
         let store = Arc::new(MemoryAccountStore::default());
         create_account(&store, "acct_provider_contract").await;
@@ -160,6 +270,9 @@ async fn semantic_output_unknown_events_and_prefix_budget_prevent_replay() {
                 "tool" => json!({"type":"response.function_call_arguments.delta","delta":"{"}),
                 "reasoning" => json!({"type":"response.reasoning_text.delta","delta":"thinking"}),
                 "unknown" => json!({"type":"future.event"}),
+                "usage" => {
+                    json!({"type":"response.created","response":{"output":[],"usage":{"input_tokens":1}}})
+                }
                 "bytes" => {
                     json!({"type":"response.created","response":{"output":[],"padding":"x".repeat(2048)}})
                 }
@@ -168,6 +281,13 @@ async fn semantic_output_unknown_events_and_prefix_budget_prevent_replay() {
             ws.send(Message::Text(event.to_string().into()))
                 .await
                 .unwrap();
+            if scenario == "frames" {
+                for _ in 0..32 {
+                    ws.send(Message::Text(event.to_string().into()))
+                        .await
+                        .unwrap();
+                }
+            }
             if scenario == "time" {
                 tokio::time::sleep(Duration::from_millis(60)).await;
             }
@@ -188,7 +308,7 @@ async fn semantic_output_unknown_events_and_prefix_budget_prevent_replay() {
             enabled: scenario != "disabled",
             max_retries: 3,
             window_ms: if scenario == "time" { 20 } else { 500 },
-            max_prefix_bytes: 1024,
+            max_prefix_bytes: if scenario == "frames" { 65536 } else { 1024 },
             ..policy()
         };
         let mut op = request(json!([{"role":"user","content":"hello"}]), None, None);
@@ -201,13 +321,21 @@ async fn semantic_output_unknown_events_and_prefix_budget_prevent_replay() {
         let (events, error) = collect(
             configured(&store, base, p),
             op,
-            context("req_no_replay", CancellationToken::new()),
+            if scenario == "middleware" {
+                context_with_middleware(
+                    "req_no_replay",
+                    Arc::new(PassThroughMiddleware),
+                    FastMode::Default,
+                )
+            } else {
+                context("req_no_replay", CancellationToken::new())
+            },
         )
         .await;
         assert!(error.is_some(), "{scenario}");
         assert!(
             !events.is_empty(),
-            "buffered events must survive {scenario}"
+            "forwarded events must survive {scenario}"
         );
         timeout(Duration::from_secs(6), server)
             .await
@@ -282,7 +410,7 @@ async fn configured_response_retries_stop_at_the_budget_without_core_recovery() 
 }
 
 #[tokio::test]
-async fn later_response_retry_can_succeed_without_exposing_discarded_preludes() {
+async fn later_response_retry_can_succeed_after_replaceable_preludes() {
     let store = Arc::new(MemoryAccountStore::default());
     create_account(&store, "acct_provider_contract").await;
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -326,7 +454,7 @@ async fn later_response_retry_can_succeed_without_exposing_discarded_preludes() 
         e.wire_event()
             .is_some_and(|w| w.event_type() == Some("response.completed"))
     }));
-    assert!(!events.iter().any(|e| {
+    assert!(events.iter().any(|e| {
         e.wire_event()
             .is_some_and(|w| w.data().to_string().contains("resp_discard_"))
     }));
@@ -433,7 +561,7 @@ async fn recovery_handshake_rejection_keeps_prior_send_and_original_status() {
 }
 
 #[tokio::test]
-async fn cancellation_while_buffering_never_replays_and_preserves_sent_state() {
+async fn cancellation_during_prelude_never_replays_and_preserves_sent_state() {
     let store = Arc::new(MemoryAccountStore::default());
     create_account(&store, "acct_provider_contract").await;
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();

@@ -63,6 +63,70 @@ async fn send(active: &mut Option<Socket>, event: Value) {
 }
 
 #[tokio::test]
+async fn encrypted_recovery_forwards_metadata_before_waiting_for_rejection() {
+    let store = Arc::new(MemoryAccountStore::default());
+    create_account(&store, "acct_provider_contract").await;
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let base = format!("http://{}", listener.local_addr().unwrap());
+    let (delivered, received) = tokio::sync::oneshot::channel();
+    let server = tokio::spawn(async move {
+        let mut active = None;
+        receive(&listener, &mut active).await;
+        send(
+            &mut active,
+            json!({"type":"codex.response.metadata","metadata":{}}),
+        )
+        .await;
+        received.await.unwrap();
+        send(&mut active, rejected(Some("bad"))).await;
+        let clean = receive(&listener, &mut active).await;
+        assert!(clean["input"][0].get("encrypted_content").is_none());
+        send(&mut active, completed("resp_immediate_repair")).await;
+    });
+    let provider = configured(&store, base, policy());
+    let mut stream = provider
+        .execute(
+            planned_request(
+                "openai",
+                operation(json!([message("bad")]), "immediate-repair", None),
+            ),
+            context("req_first_encrypted_event", CancellationToken::new()),
+        )
+        .await
+        .unwrap();
+    timeout(Duration::from_secs(2), async {
+        loop {
+            let event = stream.next().await.unwrap().unwrap();
+            if let Some(wire) = event.wire_event() {
+                assert_eq!(wire.event_type(), Some("codex.response.metadata"));
+                assert!(event.is_replayable_prelude());
+                break;
+            }
+        }
+    })
+    .await
+    .expect("encrypted recovery must not hold metadata until the rejection");
+    delivered.send(()).unwrap();
+    let mut completions = 0;
+    while let Some(event) = timeout(Duration::from_secs(3), stream.next())
+        .await
+        .unwrap()
+    {
+        let event = event.unwrap();
+        completions += usize::from(
+            event
+                .wire_event()
+                .is_some_and(|w| w.event_type() == Some("response.completed")),
+        );
+    }
+    assert_eq!(completions, 1);
+    timeout(Duration::from_secs(3), server)
+        .await
+        .unwrap()
+        .unwrap();
+}
+
+#[tokio::test]
 async fn encrypted_message_and_reasoning_recover_once_preserving_tools_and_large_history() {
     for reasoning in [false, true] {
         let store = Arc::new(MemoryAccountStore::default());
