@@ -13,11 +13,7 @@ fn release(version: &str, url: &str) -> serde_json::Value {
 }
 
 async fn index(server: &MockServer, repository: &str, stable: &str, rc: &str, beta: &str) {
-    Mock::given(method("GET")).and(path(format!("/repos/{repository}/releases/tags/update-index")))
-        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
-            "tag_name":"update-index","draft":false,"prerelease":true,"body":r#"{"current":"1.9.0"}"#
-        }))).mount(server).await;
-    Mock::given(method("GET")).and(path(format!("/{repository}/releases/download/v1.9.0/version.yaml")))
+    Mock::given(method("GET")).and(path(format!("/{repository}/refs/heads/main/release/version.yaml")))
         .respond_with(ResponseTemplate::new(200).set_body_string(format!("version: 1.9.0\npublished:\n  '1':\n    stable: {stable}\n    rc: {rc}\n    beta: {beta}\n")))
         .mount(server).await;
 }
@@ -85,7 +81,7 @@ async fn sources_are_isolated_and_preview_never_changes_installation_or_authoriz
         );
     }
     let requests = server.received_requests().await.unwrap();
-    assert_eq!(requests.len(), 6);
+    assert_eq!(requests.len(), 4);
     assert!(requests.iter().all(
         |r| r.url.path().contains("/releases/tags/") || r.url.path().ends_with("/version.yaml")
     ));
@@ -144,7 +140,7 @@ async fn missing_assets_or_releases_are_blocked_and_invalid_identity_or_index_is
         if scenario == "limited" {
             Mock::given(method("GET"))
                 .and(path(format!(
-                    "/repos/{repository}/releases/tags/update-index"
+                    "/{repository}/refs/heads/main/release/version.yaml"
                 )))
                 .respond_with(ResponseTemplate::new(403))
                 .mount(&server)

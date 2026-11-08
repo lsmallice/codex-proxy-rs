@@ -596,7 +596,8 @@ OpenAI Provider 按客户端传入的 `client_version` 请求上游目录，完�
 `base_instructions`、`model_messages`、`service_tiers`、工具与能力字段，以及未知嵌套字段、显式 `null`
 和字段缺失的区别。
 API Key 上游返回完整 Codex `models` 目录时沿用该合同；仅返回普通 `data` 模型列表时使用通用画像，
-未提供的推理能力保持未知，不补充推理档位。
+未提供的推理能力保持未知，不补充推理档位。已知的专用生图、Live／Realtime 和语音合成模型以 `visibility: "hide"`
+保留在 Codex 目录中，且不出现在默认选模列表。其他 ID 保持可见；此规则不影响普通模型列表或直接调用。
 模型别名仅替换 `slug`，不替换上游展示名、提示词、能力或 `priority`；保持原生模型顺序，新增别名附在后面。
 目录按当前路由快照的模型存在性及账号模型政策过滤，避免公布已知无法路由的模型；新模型需待后台目录对账后进入列表。
 xAI 没有 Codex 原生目录，使用官方 CLI proxy 当前目录生成通用画像。推理菜单读取
@@ -2806,6 +2807,10 @@ WebSocket 握手不主动添加专项计时请求头，客户端显式提供的�
 `environment.scope = export_time` 明确版本、构建与部署信息是导出时状态，不能代替事发环境
 
 `request.routed.data.accountPolicy` 保存执行时冻结的账号策略与预算。
+OpenAI 账号队满或超时后的重选记录为 `account.queue.reselect`；绑定迁移成功后，
+`account.binding.migrated` 保存拒绝原因 `reason`、原账号 `fromAccountId` 和新账号 `toAccountId`。
+首次认领、临时分流和失败重选不记录为绑定迁移
+
 `attempt.failed.data.recovery` 保存 Provider 的重放安全性和恢复意图；`retry.decided` 保存当时
 实际参与决策的门槛、剩余预算和发送状态，`retry.policy` 保存宿主及插件策略的停止事实。
 已有的 `provider.precommit.released` 数据保留释放原因、预取字节数与等待时间，不等同于下游已提交
@@ -3286,6 +3291,7 @@ GET/HEAD 不接受正文。响应状态码为 200–599，内容类型元数据�
 `If-None-Match` 匹配时返回无正文的 `304`。停用、版本或授权变更后，旧目标仍被拒绝，不返回缓存命中。
 两类响应默认设置 nosniff、no-referrer 与限制性 CSP，动态处理器可显式覆盖默认响应头。管理端页面使用隔离 iframe，
 仅允许脚本，不具有父页面同源权限；联网、弹窗、表单、嵌套页面和顶层导航均不开放。
+插件页面可通过宿主桥请求打开 HTTPS 外链，管理员在宿主确认后才打开新标签页。
 页面访问已声明管理路由须经过固定目标的宿主桥，不能指定其他实例或版本。插件页面作者合同见
 [SDK 管理 API 与页面](../backend/crates/gateway-plugin/sdk/docs/capabilities.md#管理页面公开入口与-cli)
 

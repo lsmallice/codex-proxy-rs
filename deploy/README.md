@@ -669,6 +669,9 @@ metrics_exporter = "none"
 WebSocket 会话完成，进程退出时强制断开剩余连接。已入队的观测写入与后台清理保留
 `host.worker_shutdown_timeout_seconds`（默认 30 秒）的收尾预算；客户端在新进程就绪后重新连接
 
+正常关闭会在后台收尾预算内释放本实例的账号并发占位，租约清理最多等待 2 秒。
+强制终止、清理超时或 Redis 清理失败时，占位由最后一次续期后的 10 分钟 TTL 回收，不影响其他实例的租约
+
 管理端重启受理后，到进程退出期间，更新、回滚和再次重启均被拒绝；可继续查询更新状态
 
 Compose 的 `stop_grace_period` 为 75 秒，覆盖默认 30 秒后台收尾及进程清理余量。
@@ -1055,6 +1058,7 @@ docker compose -f deploy/compose.yaml build codex-proxy-rs
 
 ### 升级前检查
 
+- OpenAI 或 xAI 授权使用已保存代理，且代理的 WebSocket 连接上限非零：升级或回退后，重新发起尚未完成的授权，不复用旧回调或授权码。上限为 `0` 的在途授权和已保存的账号、凭据不受影响
 - Key 配置含 `installationId`：数据库自动转换为 `installationSeed`，API 调用方须使用[当前字段](../docs/api.md#key-客户端身份)。出站安装身份及关联的会话、缓存标识会变化，已有 WebSocket 精确续写需重发完整上下文
 - 数据库或备份含 `accountAutoFreeze*` 设置：升级后错误保护关闭、规则为空，需在管理端重新配置并启用；API 调用方使用 [`accountErrorProtection`](../docs/api.md#账号错误保护)。已有冻结到当前冷却截止后解除，账号并发上限保留，需调整时手动设置
 
@@ -1076,9 +1080,9 @@ docker compose -f deploy/compose.yaml build codex-proxy-rs
 切换通道不会降级，Stable 候选也必须高于当前运行版本。
 下载、安装或待重启期间不能切换通道
 
-更新候选来自公开发行附件。更新器按固定 tag 查询预发行页 `update-index`，从正文 JSON 的 `current` 读取快照版本，再读取该版本 Release 的 `version.yaml` 附件。附件的 `version` 标识快照，`published` 按大版本和通道列出可安装版本；修改源码或仅打 tag 不会触发提示
+更新器读取更新仓库 `main` 分支的 `release/version.yaml`。`version` 是源码构建版本，只有 `published` 中当前大版本和通道对应的版本才参与更新检查
 
-自定义更新仓库须提供相同入口、快照及各候选的公开 Release。使用本仓库发布工作流时自动维护索引；`update-index` 不设为 Latest，不需要额外分支
+自定义更新仓库须提供这份清单和候选版本的公开 Release。发布工作流在安装包公开并通过校验后更新 `published`，需要具有写入 `main` 的权限
 
 提示有更新前会按精确 tag 核对候选 Release、当前平台包和校验文件，无需配置 GitHub 令牌。GitHub 限流时按提示稍后重试；
 也可从[发行页](https://github.com/zyycn/codex-proxy-rs/releases)下载平台归档，按[手动安装](#手动安装)升级
@@ -1191,7 +1195,7 @@ Release 必须提供当前 OS/架构的 `codex-proxy-rs_<version>_<os>_<arch>.ta
 
 | 文件或目录 | 用途 |
 | --- | --- |
-| `plugin-release-manifest.json` | 固定宿主版本、提交、平台与支持的插件合同；插件列表当前为空 |
+| `plugins/official/plugin-release-manifest.json` | 随平台安装包和镜像分发，记录宿主版本、提交与支持的插件合同 |
 | 可执行文件同目录的 `plugins/official` | 随受信宿主发行物部署的只读目录，与二进制、Web 资源成套更新或恢复 |
 
 - 下载更新时校验发行身份，插件合同不兼容不阻止安装。点击重启时检查已安装目标版本，列出不兼容插件的名称和原因；确认后重启，不兼容实例保持未启动，启用配置、绑定、密钥和私有数据保留

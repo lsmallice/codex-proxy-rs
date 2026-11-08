@@ -18,12 +18,8 @@ async fn configured_repository_controls_release_queries() {
             serde_json::from_value(configuration).expect("update configuration");
         let server = MockServer::start().await;
         Mock::given(method("GET"))
-            .and(path(format!("/repos/{expected}/releases/tags/update-index")))
-            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({"tag_name":"update-index","draft":false,"prerelease":true,"body":r#"{"current":"1.9.0"}"#})))
-            .expect(1).mount(&server).await;
-        Mock::given(method("GET"))
             .and(path(format!(
-                "/{expected}/releases/download/v1.9.0/version.yaml"
+                "/{expected}/refs/heads/main/release/version.yaml"
             )))
             .respond_with(ResponseTemplate::new(200).set_body_string(format!(
                 "version: 1.9.0\npublished:\n  '1':\n    stable: {TARGET_VERSION}\n"
