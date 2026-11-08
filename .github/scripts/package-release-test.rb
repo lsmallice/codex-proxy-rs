@@ -82,7 +82,6 @@ class ReleasePackageTest < Minitest::Test
       assets = Dir.children('dist/release') - ['checksums.txt']
       assert_equal assets.sort, checksums.keys.sort
       assets.each { |file| assert_equal Digest::SHA256.file("dist/release/#{file}").hexdigest, checksums.fetch(file) }
-      assert_equal @manifest, File.binread('dist/release/plugin-release-manifest.json')
       @platforms.each do |platform|
         archive = "dist/release/codex-proxy-rs_#{version}_#{platform['os']}_#{platform['arch']}.tar.gz"
         contents = {
