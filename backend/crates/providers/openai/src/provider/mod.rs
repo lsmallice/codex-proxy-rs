@@ -109,6 +109,7 @@ mod guardian;
 mod live;
 mod observation;
 mod opening_recovery;
+mod preconnect;
 mod response_recovery;
 mod upstream_adapter;
 mod workers;
@@ -163,6 +164,8 @@ pub struct CodexProvider {
     request_compatibility: crate::config::CodexRequestCompatibility,
     fork_runtime: Option<Arc<crate::OpenAiForkRuntime>>,
     response_recovery_slots: Arc<tokio::sync::Semaphore>,
+    preconnect_slots: Arc<tokio::sync::Semaphore>,
+    preconnect_loading: Arc<tokio::sync::Semaphore>,
     rejected_ciphertexts: Arc<encrypted_history::Cache>,
     live_registry: Arc<CodexLiveRegistry>,
     live_gateway: Option<Arc<CodexLiveGateway>>,
@@ -311,7 +314,10 @@ impl CodexProvider {
         context: &AttemptContext,
     ) -> Result<CodexBackendClient, ProviderError> {
         let Some(profile) = context.request_profile() else {
-            return Ok(self.client.clone());
+            return Ok(self
+                .client
+                .clone()
+                .with_preconnect_owner(context.client_api_key_ref().as_str()));
         };
         let profile = serde_json::from_value(Value::Object(profile.expose_to_provider().clone()))
             .map_err(|error: serde_json::Error| {
@@ -325,7 +331,11 @@ impl CodexProvider {
             provider_error(ProviderErrorKind::Protocol, UpstreamSendState::NotSent)
                 .with_diagnostic(diagnostic)
         })?;
-        Ok(self.client.clone().with_request_profile(profile))
+        Ok(self
+            .client
+            .clone()
+            .with_request_profile(profile)
+            .with_preconnect_owner(context.client_api_key_ref().as_str()))
     }
 
     // Provider 构造集中装配独立领域服务和透明传输依赖，拆分参数会模糊所有权
@@ -370,6 +380,8 @@ impl CodexProvider {
             guardian_routing: guardian::GuardianRouting::default(),
             stream_max_retries,
             ws_opening_recovery: crate::config::CodexWsOpeningRecovery::default(),
+            preconnect_slots: Arc::new(tokio::sync::Semaphore::new(512)),
+            preconnect_loading: Arc::new(tokio::sync::Semaphore::new(8)),
             ws_response_recovery: crate::config::CodexWsResponseRecovery::default(),
             request_compatibility: crate::config::CodexRequestCompatibility::default(),
             fork_runtime: None,
@@ -653,9 +665,13 @@ impl Provider for CodexProvider {
             frozen.request_compatibility = policy.request_compatibility;
             frozen.ws_opening_recovery = policy.ws_opening_recovery;
             frozen.ws_response_recovery = policy.ws_response_recovery.clone();
-            frozen.selector = Arc::new(self.selector.with_model_unsupported_cooldown(
-                Duration::from_secs(policy.model_unsupported_cooldown_seconds),
-            ));
+            frozen.selector = Arc::new(
+                self.selector
+                    .with_model_unsupported_cooldown(Duration::from_secs(
+                        policy.model_unsupported_cooldown_seconds,
+                    ))
+                    .with_preconnect(policy.ws_preconnect.enabled),
+            );
             return Arc::new(frozen).execute(request, context).await;
         }
         if request.candidate().provider().as_str() != PROVIDER_NAME {
@@ -1114,6 +1130,19 @@ impl CodexProvider {
                 .map(|affinity| (response_id.to_owned(), affinity))
         });
         let client = self.client_for_request(&context)?;
+        if context.privacy().is_none()
+            && middleware_headers.is_empty()
+            && !upstream_request.is_guardian()
+            && context
+                .outbound_middleware(
+                    provider_kind.clone(),
+                    Some(upstream_model.as_str().to_owned()),
+                    lease.account_id().clone(),
+                )
+                .is_none()
+        {
+            self.prepare_standby(&client, &upstream_request, &context, &lease);
+        }
         let installation_id = client.profile_state().effective_installation_id(
             context.client_api_key_ref(),
             lease.account_id(),

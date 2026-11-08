@@ -36,6 +36,29 @@ impl Drop for ProxyConnectionPermit {
 }
 
 impl CodexWebSocketPool {
+    // 后台储备只使用当前空位，不驱逐业务空闲连接或进入容量等待队列
+    pub(super) fn try_preconnect_proxy_capacity(
+        &self,
+        proxy: Option<&OutboundProxy>,
+    ) -> Result<Option<ProxyConnectionPermit>, ()> {
+        let Some(proxy) = proxy else {
+            return Ok(None);
+        };
+        let capacity = self.proxy_capacity(&proxy_capacity_key(Some(proxy)));
+        let limit = proxy.max_websocket_connections() as usize;
+        capacity
+            .connections
+            .try_update(Ordering::AcqRel, Ordering::Acquire, |used| {
+                if limit != 0 && used >= limit {
+                    None
+                } else {
+                    used.checked_add(1)
+                }
+            })
+            .map_err(|_| ())?;
+        Ok(Some(ProxyConnectionPermit(capacity)))
+    }
+
     fn proxy_capacity(&self, proxy_key: &str) -> Arc<ProxyCapacity> {
         let mut capacities = self
             .proxy_capacities
@@ -89,6 +112,21 @@ impl CodexWebSocketPool {
                 .is_ok()
             {
                 return Ok(Some(ProxyConnectionPermit(Arc::clone(&capacity))));
+            }
+            let (released, standby) = self
+                .lock_state()
+                .preconnect
+                .release_proxy_capacity(&proxy_key);
+            if released {
+                if standby.is_empty() {
+                    tokio::select! {
+                        _ = &mut changed => {},
+                        _ = self.shutdown.cancelled() => return Err(CodexWebSocketExchangeError::SharedConnectFailed),
+                    }
+                } else {
+                    super::state::close_pooled_connections(standby).await;
+                }
+                continue;
             }
             let evicted = {
                 let mut state = self.lock_state();

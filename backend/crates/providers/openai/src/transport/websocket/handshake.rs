@@ -88,6 +88,7 @@ impl CodexWebSocketConnection {
             WEBSOCKET_EXTENSIONS.to_string(),
         ));
         Self {
+            preconnect_identity: None,
             endpoint,
             headers,
             permessage_deflate: true,

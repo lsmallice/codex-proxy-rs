@@ -48,6 +48,7 @@ pub(crate) async fn connect_live_sideband(
         }
     }
     let connection = CodexWebSocketConnection {
+        preconnect_identity: None,
         endpoint,
         headers: business_headers,
         permessage_deflate: true,

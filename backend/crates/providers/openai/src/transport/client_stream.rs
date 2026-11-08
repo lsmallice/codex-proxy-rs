@@ -322,6 +322,8 @@ impl CodexBackendClient {
         )
         .map_err(CodexClientError::WebSocketEncode)?;
         websocket_create.connection.outbound_proxy = self.outbound_proxy.clone();
+        websocket_create.connection.preconnect_identity =
+            self.preconnect_owner.clone().zip(self.credential_revision);
         websocket_create.connection.connection_budget = self.connection_budget.clone();
         let (websocket_create, outbound_profile) =
             self.prepare_websocket_request(websocket_create).await?;
@@ -614,6 +616,65 @@ impl CodexBackendClient {
             key = key.with_downstream_connection_id(connection_id);
         }
         Some(key)
+    }
+
+    pub(crate) fn preconnect_enabled(&self) -> bool {
+        self.websocket_pool
+            .as_ref()
+            .is_some_and(|pool| pool.preconnect_enabled())
+    }
+
+    pub(crate) fn spawn_preconnect_preparation(
+        &self,
+        future: impl std::future::Future<Output = ()> + Send + 'static,
+    ) {
+        if let Some(pool) = &self.websocket_pool {
+            pool.spawn_connect_task(future);
+        }
+    }
+
+    pub(crate) fn schedule_preconnect(
+        &self,
+        request: &CodexResponsesRequest,
+        context: CodexRequestContext<'_>,
+        account_id: &str,
+        downstream: Option<&gateway_core::lifecycle::CancellationToken>,
+    ) -> CodexClientResult<()> {
+        let Some(pool) = self
+            .websocket_pool
+            .as_ref()
+            .filter(|pool| pool.preconnect_enabled())
+        else {
+            return Ok(());
+        };
+        if self.outbound_middleware.is_some()
+            || self.privacy.is_some()
+            || !self.middleware_headers.is_empty()
+            || self.routing_affinity.is_some()
+        {
+            return Ok(());
+        }
+        let profile = self.profile.snapshot();
+        let mut headers =
+            self.request_headers_for_websocket_response(&profile, request, context)?;
+        let mut body = serde_json::Value::Object(request.body().clone());
+        profile.apply_context_versions(&mut body);
+        super::correlation::scope_request(&mut body, &mut headers, context.installation_id);
+        let connection_profile = websocket_connection_profile(&headers, &[], None);
+        let Some(key) =
+            self.websocket_pool_key(request, context, Some(account_id), &connection_profile)
+        else {
+            return Ok(());
+        };
+        let mut opening = CodexWebSocketConnection::responses(
+            &self.base_url,
+            &generate_key(),
+            websocket_header_pairs(&headers),
+        );
+        opening.outbound_proxy = self.outbound_proxy.clone();
+        opening.preconnect_identity = self.preconnect_owner.clone().zip(self.credential_revision);
+        pool.schedule_preconnect(key, opening, downstream);
+        Ok(())
     }
 }
 

@@ -592,6 +592,20 @@ fn classify_upstream_failure(
     }
 }
 
+/// 前台恢复与后台预连接共用的空正文拒绝边界，不推断身份错误可重试
+pub(crate) fn empty_opening_rejection(
+    status: u16,
+    body: &str,
+    diagnostics: &CodexUpstreamDiagnostics,
+    phase: CodexUpstreamSendPhase,
+) -> bool {
+    status == 403
+        && phase == CodexUpstreamSendPhase::BeforePayload
+        && body.is_empty()
+        && diagnostics.identity_authorization_error.is_none()
+        && diagnostics.identity_error_code.is_none()
+}
+
 fn normalized(value: Option<&str>) -> String {
     value.unwrap_or_default().trim().to_ascii_lowercase()
 }

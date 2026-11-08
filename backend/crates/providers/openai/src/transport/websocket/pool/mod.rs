@@ -3,6 +3,7 @@
 mod capacity;
 mod downstream;
 mod lease;
+mod preconnect;
 mod state;
 mod supervisor;
 
@@ -53,6 +54,7 @@ pub struct CodexWebSocketPool {
     maintenance_started: Arc<AtomicBool>,
     proxy_capacities: Arc<Mutex<HashMap<String, Weak<ProxyCapacity>>>>,
     capacity_changed: Arc<Notify>,
+    preconnect_policy: Arc<preconnect::PolicySource>,
 }
 
 impl Default for CodexWebSocketPool {
@@ -112,6 +114,7 @@ impl CodexWebSocketPool {
             maintenance_started: Arc::new(AtomicBool::new(false)),
             proxy_capacities: Arc::default(),
             capacity_changed: Arc::default(),
+            preconnect_policy: Arc::default(),
         };
         pool.spawn_maintenance_task();
         pool
@@ -134,6 +137,7 @@ impl CodexWebSocketPool {
         requires_search: bool,
         proxy: Option<&gateway_core::account::OutboundProxy>,
         downstream_cancellation: Option<&gateway_core::lifecycle::CancellationToken>,
+        opening: &super::model::CodexWebSocketConnection,
     ) -> WebSocketPoolAcquire {
         self.spawn_maintenance_task();
         if let Some(cancellation) = downstream_cancellation {
@@ -271,6 +275,13 @@ impl CodexWebSocketPool {
                     Some(WebSocketPoolAcquire::Bypass(
                         WebSocketPoolBypassReason::ContinuationNotFound,
                     ))
+                } else if let Some(connection) = self.take_preconnected(&mut state, &key, opening) {
+                    let lease = WebSocketPoolLease::reserve(self.clone(), key.clone(), None);
+                    state.slots.insert(
+                        key.clone(),
+                        WebSocketPoolSlot::Busy(lease.reservation.clone()),
+                    );
+                    Some(WebSocketPoolAcquire::Reused { connection, lease })
                 } else if proxy.is_some() && proxy_permit.is_none() {
                     None
                 } else {

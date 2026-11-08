@@ -143,6 +143,7 @@ pub struct CodexCredentialSelector {
     catalog: Arc<CodexCredentialCatalogService>,
     cooldowns: Arc<dyn ProviderCooldownPort>,
     model_unsupported_cooldown: Duration,
+    preconnect_enabled: bool,
     upstream_info: Option<Arc<dyn gateway_core::account::UpstreamInfoSource>>,
     cookie_policy: CodexCookiePolicy,
     risk_recovery: Arc<Mutex<HashMap<String, RiskRecoveryState>>>,
@@ -304,6 +305,7 @@ impl CodexCredentialSelector {
             catalog,
             cooldowns,
             model_unsupported_cooldown,
+            preconnect_enabled: false,
             upstream_info: None,
             cookie_policy,
             risk_recovery: Arc::new(Mutex::new(HashMap::new())),
@@ -343,6 +345,38 @@ impl CodexCredentialSelector {
         let mut frozen = self.clone();
         frozen.model_unsupported_cooldown = duration;
         frozen
+    }
+
+    pub(crate) fn with_preconnect(&self, enabled: bool) -> Self {
+        let mut selector = self.clone();
+        selector.preconnect_enabled = enabled;
+        selector
+    }
+
+    pub(crate) async fn load_preconnect_credential(
+        &self,
+        account: &ProviderAccount,
+        request_url: &Url,
+    ) -> Result<(ProviderAccount, super::codec::CodexRuntimeCredential), CredentialSelectionError>
+    {
+        let (account, mut runtime) = self.repository.reload_selected_credential(account).await?;
+        runtime
+            .cookies
+            .retain(|cookie| self.cookie_replay_allowed(cookie, request_url));
+        Ok((account, runtime))
+    }
+
+    fn cookie_replay_allowed(&self, cookie: &RuntimeCodexCookie, request_url: &Url) -> bool {
+        cookie
+            .expires_at
+            .is_none_or(|expires| expires > chrono::Utc::now())
+            && self.cookie_policy.may_replay(
+                request_url,
+                &cookie.domain,
+                &cookie.path,
+                cookie.host_only,
+                cookie.secure,
+            )
     }
 
     pub async fn select(
@@ -1419,16 +1453,7 @@ impl CodexCredentialSelector {
                             .cookies
                             .into_iter()
                             .filter(|cookie| {
-                                cookie
-                                    .expires_at
-                                    .is_none_or(|expires| expires > chrono::Utc::now())
-                                    && self.cookie_policy.may_replay(
-                                        request.request_url,
-                                        &cookie.domain,
-                                        &cookie.path,
-                                        cookie.host_only,
-                                        cookie.secure,
-                                    )
+                                self.cookie_replay_allowed(cookie, request.request_url)
                             })
                             .collect();
                         if !waiting.elapsed().is_zero() {
@@ -1438,6 +1463,32 @@ impl CodexCredentialSelector {
                             );
                         }
                         return Ok(CodexCredentialLease {
+                            preconnect_candidate: if self.preconnect_enabled
+                                && !diagnostic
+                                && !follow_only
+                                && pinned_account.is_none()
+                                && !selection.is_policy_choice()
+                                && native_accounts.contains(account.id())
+                            {
+                                let mut preview = context.clone();
+                                preview.preferred_account = None;
+                                preview.excluded_accounts.insert(account.id().clone());
+                                preview.excluded_accounts.extend(candidates.iter().filter(|candidate| {
+                                    !native_accounts.contains(candidate.account.id())
+                                        || candidate.account.quota().access() != gateway_core::account::QuotaAccessState::Allowed
+                                        || candidate.account.credential_state() != CredentialState::Ready
+                                        || candidate.account.plan_type().is_none_or(|plan| plan.is_empty() || plan == "unknown")
+                                }).map(|candidate| candidate.account.id().clone()));
+                                // 只读已有候选与游标，不取得租约、调用策略插件或认领亲和
+                                AccountSelector
+                                    .select(&candidates, &preview)
+                                    .filter(|next| {
+                                        native_accounts.contains(next.candidate().account.id())
+                                    })
+                                    .map(|next| next.candidate().account.clone())
+                            } else {
+                                None
+                            },
                             installation_id: runtime.installation_id,
                             transport: runtime.transport,
                             account,
@@ -2087,6 +2138,7 @@ impl fmt::Debug for CodexCredentialSelector {
 }
 
 pub struct CodexCredentialLease {
+    pub(crate) preconnect_candidate: Option<ProviderAccount>,
     transport: super::ResponsesTransport,
     account: ProviderAccount,
     authentication: CodexRuntimeAuthentication,

@@ -18,6 +18,7 @@ mod response_recovery;
 pub(super) use outbound::outbound_context;
 mod passthrough;
 mod precommit;
+mod preconnect;
 mod privacy;
 mod recovery;
 mod response_interrupt;
@@ -1259,7 +1260,10 @@ fn provider_and_quota_with_runtime_ports(
         .no_proxy()
         .build()
         .expect("client");
-    let websocket_pool = Arc::new(CodexWebSocketPool::default());
+    let websocket_pool = Arc::new(
+        CodexWebSocketPool::with_config(config.websocket_pool_config())
+            .with_preconnect(config.ws_preconnect, config.fork_runtime.clone()),
+    );
     let catalog = Arc::new(CodexCredentialCatalogService::new(
         store.repository(),
         profile.clone(),
@@ -1301,7 +1305,8 @@ fn provider_and_quota_with_runtime_ports(
         Arc::clone(&websocket_pool),
         config.stream_max_retries(),
     )
-    .expect("official OpenAI provider");
+    .expect("official OpenAI provider")
+    .with_fork_runtime(config.fork_runtime.clone());
     (Arc::new(provider), quota, websocket_pool)
 }
 

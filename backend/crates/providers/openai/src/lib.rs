@@ -145,9 +145,10 @@ pub async fn initialize(
     );
     platform_releases.restore().await;
     let repository = CodexCredentialRepository::new(Arc::clone(&accounts));
-    let websocket_pool = Arc::new(CodexWebSocketPool::with_config(
-        config.websocket_pool_config(),
-    ));
+    let websocket_pool = Arc::new(
+        CodexWebSocketPool::with_config(config.websocket_pool_config())
+            .with_preconnect(config.ws_preconnect, config.fork_runtime.clone()),
+    );
     let catalog = Arc::new(CodexCredentialCatalogService::new(
         repository.clone(),
         profile.clone(),
@@ -183,7 +184,8 @@ pub async fn initialize(
             CodexCookiePolicy::official().map_err(|_| OpenAiInitializeError::CookiePolicy)?,
             std::time::Duration::from_secs(config.model_unsupported_cooldown_seconds),
         )
-        .with_upstream_info(upstream_info),
+        .with_upstream_info(upstream_info)
+        .with_preconnect(config.ws_preconnect.enabled),
     );
     let core_provider: Arc<dyn Provider> = Arc::new(
         CodexProvider::new(

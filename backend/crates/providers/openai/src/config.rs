@@ -48,6 +48,8 @@ pub struct OpenAiConfig {
     pub stream_max_retries: u64,
     #[serde(default)]
     pub ws_opening_recovery: CodexWsOpeningRecovery,
+    #[serde(default)]
+    pub ws_preconnect: CodexWsPreconnect,
     #[serde(default = "default_model_unsupported_cooldown_seconds")]
     pub model_unsupported_cooldown_seconds: u64,
     #[serde(default)]
@@ -79,6 +81,7 @@ impl OpenAiConfig {
         self.quota.validate()?;
         self.auth.validate()?;
         self.ws_opening_recovery.validate()?;
+        self.ws_preconnect.validate()?;
         self.ws_response_recovery.validate()?;
         if self.model_unsupported_cooldown_seconds > 86400 {
             return Err(OpenAiConfigError::InvalidField(
@@ -147,6 +150,7 @@ impl Default for OpenAiConfig {
             auth: CodexAuthSettings::default(),
             stream_max_retries: DEFAULT_STREAM_MAX_RETRIES,
             ws_opening_recovery: CodexWsOpeningRecovery::default(),
+            ws_preconnect: CodexWsPreconnect::default(),
             model_unsupported_cooldown_seconds: default_model_unsupported_cooldown_seconds(),
             ws_response_recovery: CodexWsResponseRecovery::default(),
             request_compatibility: CodexRequestCompatibility::default(),
@@ -154,6 +158,91 @@ impl Default for OpenAiConfig {
             account_routing_override: None,
             identity_secret_path: PathBuf::new(),
         }
+    }
+}
+
+/// 会话备用握手预算，不改变账号并发、调度或续接授权
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(default, deny_unknown_fields)]
+pub struct CodexWsPreconnect {
+    pub enabled: bool,
+    pub max_connections: usize,
+    pub max_connections_per_account: usize,
+    pub max_connecting: usize,
+    pub starts_per_second: u32,
+    pub idle_timeout_seconds: u64,
+    pub max_retries: u32,
+    pub retry_delay_ms: u64,
+    pub failure_backoff_seconds: u64,
+}
+
+impl Default for CodexWsPreconnect {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            max_connections: 512,
+            max_connections_per_account: 128,
+            max_connecting: 8,
+            starts_per_second: 8,
+            idle_timeout_seconds: 120,
+            max_retries: 2,
+            retry_delay_ms: 500,
+            failure_backoff_seconds: 30,
+        }
+    }
+}
+
+impl CodexWsPreconnect {
+    fn validate(&self) -> Result<(), OpenAiConfigError> {
+        for (valid, field) in [
+            (
+                (1..=8192).contains(&self.max_connections),
+                "max_connections",
+            ),
+            (
+                (1..=1024).contains(&self.max_connections_per_account)
+                    && self.max_connections_per_account <= self.max_connections,
+                "max_connections_per_account",
+            ),
+            (
+                (1..=128).contains(&self.max_connecting)
+                    && self.max_connecting <= self.max_connections,
+                "max_connecting",
+            ),
+            (
+                (1..=128).contains(&self.starts_per_second),
+                "starts_per_second",
+            ),
+            (
+                (10..=600).contains(&self.idle_timeout_seconds),
+                "idle_timeout_seconds",
+            ),
+            (self.max_retries <= 5, "max_retries"),
+            (
+                (100..=5000).contains(&self.retry_delay_ms),
+                "retry_delay_ms",
+            ),
+            (
+                (5..=300).contains(&self.failure_backoff_seconds),
+                "failure_backoff_seconds",
+            ),
+        ] {
+            if !valid {
+                return Err(OpenAiConfigError::InvalidField(match field {
+                    "max_connections" => "openai.ws_preconnect.max_connections",
+                    "max_connections_per_account" => {
+                        "openai.ws_preconnect.max_connections_per_account"
+                    }
+                    "max_connecting" => "openai.ws_preconnect.max_connecting",
+                    "starts_per_second" => "openai.ws_preconnect.starts_per_second",
+                    "idle_timeout_seconds" => "openai.ws_preconnect.idle_timeout_seconds",
+                    "max_retries" => "openai.ws_preconnect.max_retries",
+                    "retry_delay_ms" => "openai.ws_preconnect.retry_delay_ms",
+                    _ => "openai.ws_preconnect.failure_backoff_seconds",
+                }));
+            }
+        }
+        Ok(())
     }
 }
 

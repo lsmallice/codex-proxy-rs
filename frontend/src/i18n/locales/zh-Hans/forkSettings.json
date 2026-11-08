@@ -1,5 +1,12 @@
 {
   "forkSettings": {
+    "preconnect": "会话备用 WS 预连接",
+    "preconnectTotal": "实例备用连接上限",
+    "preconnectAccount": "单账号备用连接上限",
+    "preconnectConnecting": "后台同时握手数",
+    "preconnectRate": "后台每秒握手启动数",
+    "preconnectTtl": "未领取连接保留时间",
+    "preconnectBackoff": "失败后暂停补建时间",
     "title": "二开配置",
     "requestCompatibility": "Responses 请求兼容",
     "liteContext": "Lite 上下文补正",

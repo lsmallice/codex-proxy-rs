@@ -109,6 +109,9 @@ impl WebSocketPoolState {
             .cloned()
             .collect::<Vec<_>>();
         let mut close = Vec::new();
+        if keep.is_none() {
+            close.extend(self.preconnect.remove_downstream(connection_id));
+        }
         for key in keys {
             match self.slots.remove(&key) {
                 Some(WebSocketPoolSlot::Idle { connection, .. }) => {

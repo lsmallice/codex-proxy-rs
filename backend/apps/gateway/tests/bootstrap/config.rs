@@ -39,6 +39,10 @@ fn saved_fork_settings_override_yaml_on_startup_and_reject_invalid_files() {
         .as_object_mut()
         .unwrap()
         .remove("request_compatibility");
+    saved["values"]["openai"]
+        .as_object_mut()
+        .unwrap()
+        .remove("ws_preconnect");
     for field in [
         "encrypted_history",
         "encrypted_history_max_sessions",

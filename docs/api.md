@@ -2041,7 +2041,7 @@ HTTP 返回 `429`，`error.code` 为 `key_daily_budget_exceeded` 或 `key_weekly
 `GET /api/admin/settings/fork` 返回 `revision`、`active`、`saved` 和 `restartRequired`。
 `POST` 必须携带同一 `revision` 与完整 `values`，版本过期返回 409，不自动覆盖。
 `values` 仅包括 `openai.model_unsupported_cooldown_seconds`、`openai.ws_opening_recovery`、
-`openai.ws_response_recovery`、`openai.request_compatibility` 和 `plugins` 的配置，不接受凭据或上游地址。
+`openai.ws_response_recovery`、`openai.ws_preconnect`、`openai.request_compatibility` 和 `plugins` 的配置，不接受凭据或上游地址。
 字段沿用 YAML 的 snake_case，范围见[部署配置](../deploy/README.md#模型不支持冷却)
 
 保存成功后发布单实例请求策略，不改变全局 `configRevision` 或重启服务。
@@ -2051,6 +2051,10 @@ HTTP 返回 `429`，`error.code` 为 `key_daily_budget_exceeded` 或 `key_weekly
 准备或写盘失败不发布，已有失效摘要不因策略发布被清空，手工改文件不自动热更新。
 文件或完整配置超过 64 KiB、字段无效时拒绝保存；读取到损坏文件时不覆盖。
 备份与升级保留要求见[二开配置管理](../deploy/README.md#二开配置管理)
+
+`ws_preconnect` 管理本实例的会话备用握手，默认关闭，不触发生成、RT 刷新或账号迁移。
+开关与预算保存后影响后台任务，关闭或缩小储备由维护任务回收未领取连接，不中断业务流。
+范围与限制见[会话备用预连接](../deploy/README.md#会话备用预连接)
 
 ### 历史保留
 

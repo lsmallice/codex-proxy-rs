@@ -7,6 +7,7 @@ export interface ForkSettingsValues {
     request_compatibility: { lite_context: boolean, store_false: boolean, json_object: boolean, min_output_tokens_16: boolean, tool_structure: boolean }
     model_unsupported_cooldown_seconds: number
     ws_opening_recovery: { enabled: boolean, max_retries: number, retry_delay_ms: number, http_fallback: boolean }
+    ws_preconnect: { enabled: boolean, max_connections: number, max_connections_per_account: number, max_connecting: number, starts_per_second: number, idle_timeout_seconds: number, max_retries: number, retry_delay_ms: number, failure_backoff_seconds: number }
     ws_response_recovery: { enabled: boolean, full_history: boolean, encrypted_history: boolean, encrypted_history_max_sessions: number, encrypted_history_max_digests_per_session: number, max_retries: number, window_ms: number, max_prefix_bytes: number, close_codes: number[], disconnects: boolean }
   }
   plugins: {

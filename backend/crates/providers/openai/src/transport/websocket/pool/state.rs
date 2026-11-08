@@ -99,11 +99,15 @@ impl CodexWebSocketPoolKey {
     }
 
     pub(crate) fn stable_hash(&self) -> String {
+        self.identity_digest().chars().take(12).collect()
+    }
+
+    pub(super) fn identity_digest(&self) -> String {
         let routing_affinity = self
             .routing_affinity_id
             .map(|id| id.to_string())
             .unwrap_or_default();
-        short_sha256([
+        sha256([
             self.base_url.as_str(),
             self.account_id.as_str(),
             self.conversation_id.as_str(),
@@ -130,6 +134,7 @@ const MAX_CONTINUATION_TOMBSTONES: usize = 4_096;
 
 #[derive(Default)]
 pub(super) struct WebSocketPoolState {
+    pub(super) preconnect: super::preconnect::State,
     pub(super) slots: HashMap<CodexWebSocketPoolKey, WebSocketPoolSlot>,
     pub(super) downstream_connections: HashMap<String, gateway_core::lifecycle::CancellationToken>,
     continuation_tombstones: VecDeque<WebSocketContinuationTombstone>,
@@ -295,10 +300,14 @@ pub(super) fn idle_connection_loss(
 }
 
 fn short_sha256<'a>(parts: impl IntoIterator<Item = &'a str>) -> String {
+    sha256(parts).chars().take(12).collect()
+}
+
+fn sha256<'a>(parts: impl IntoIterator<Item = &'a str>) -> String {
     let mut hasher = Sha256::new();
     for part in parts {
         hasher.update(part.as_bytes());
         hasher.update(b"\0");
     }
-    hex::encode(hasher.finalize()).chars().take(12).collect()
+    hex::encode(hasher.finalize())
 }

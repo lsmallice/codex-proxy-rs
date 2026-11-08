@@ -697,6 +697,8 @@ impl OpenAiUpstreamProtocol {
 /// Codex HTTP/SSE 上游客户端
 #[derive(Clone)]
 pub struct CodexBackendClient {
+    pub(super) preconnect_owner: Option<String>,
+    pub(super) credential_revision: Option<u64>,
     pub(super) routing_affinity: Option<super::routing_affinity::ChatGptRoutingAffinity>,
     pub(super) privacy: Option<(
         Arc<dyn gateway_core::settings::privacy::CompiledPrivacyPolicy>,
@@ -720,6 +722,10 @@ pub struct CodexBackendClient {
 }
 
 impl CodexBackendClient {
+    pub(crate) fn with_preconnect_owner(mut self, owner: &str) -> Self {
+        self.preconnect_owner = Some(owner.to_owned());
+        self
+    }
     pub(crate) const fn profile_state(&self) -> &CodexWireProfileState {
         &self.profile
     }
@@ -739,6 +745,8 @@ impl CodexBackendClient {
         let base_url = base_url.into().trim_end_matches('/').to_string();
         Self {
             routing_affinity: None,
+            preconnect_owner: None,
+            credential_revision: None,
             privacy: None,
             timezone: Default::default(),
             connection_budget: None,
@@ -879,6 +887,7 @@ impl CodexBackendClient {
         account: &gateway_core::account::ProviderAccount,
     ) -> Result<Self, CodexClientError> {
         let mut client = self.clone();
+        client.credential_revision = Some(account.revision().get());
         client.outbound_proxy = account.outbound_proxy().cloned();
         client.egress_key = egress_key(account.id().as_str(), account.outbound_proxy());
         if account.authentication_kind() == crate::CODEX_AUTHENTICATION_KIND_API_KEY {

@@ -203,6 +203,27 @@ defineExpose({ hasChanges })
       </section>
       <section>
         <h2 class="text-z-base font-semibold">
+          {{ t('forkSettings.preconnect') }}
+          <ZTag type="success" class="ml-2">
+            {{ t('forkSettings.hotApply') }}
+          </ZTag>
+        </h2>
+        <div class="mt-4 grid max-w-6xl gap-4.5 sm:grid-cols-2 xl:grid-cols-3">
+          <ZFormItem :label="t('forkSettings.preconnect')">
+            <ZSwitch v-model="displayed.openai.ws_preconnect.enabled" :disabled="disabled" :label="t('forkSettings.enable')" />
+          </ZFormItem>
+          <ForkNumber v-model="displayed.openai.ws_preconnect.max_connections" :disabled="disabled" :label="t('forkSettings.preconnectTotal')" :min="1" :max="8192" />
+          <ForkNumber v-model="displayed.openai.ws_preconnect.max_connections_per_account" :disabled="disabled" :label="t('forkSettings.preconnectAccount')" :min="1" :max="1024" />
+          <ForkNumber v-model="displayed.openai.ws_preconnect.max_connecting" :disabled="disabled" :label="t('forkSettings.preconnectConnecting')" :min="1" :max="128" />
+          <ForkNumber v-model="displayed.openai.ws_preconnect.starts_per_second" :disabled="disabled" :label="t('forkSettings.preconnectRate')" :min="1" :max="128" />
+          <ForkNumber v-model="displayed.openai.ws_preconnect.idle_timeout_seconds" :disabled="disabled" :label="t('forkSettings.preconnectTtl')" :min="10" :max="600" :unit="t('forkSettings.seconds')" />
+          <ForkNumber v-model="displayed.openai.ws_preconnect.max_retries" :disabled="disabled" :label="t('forkSettings.extraRetries')" :min="0" :max="5" />
+          <ForkNumber v-model="displayed.openai.ws_preconnect.retry_delay_ms" :disabled="disabled" :label="t('forkSettings.retryDelay')" :min="100" :max="5000" :unit="t('forkSettings.milliseconds')" />
+          <ForkNumber v-model="displayed.openai.ws_preconnect.failure_backoff_seconds" :disabled="disabled" :label="t('forkSettings.preconnectBackoff')" :min="5" :max="300" :unit="t('forkSettings.seconds')" />
+        </div>
+      </section>
+      <section>
+        <h2 class="text-z-base font-semibold">
           {{ t('forkSettings.responseRecovery') }}
           <ZTag type="success" class="ml-2">
             {{ t('forkSettings.hotApply') }}

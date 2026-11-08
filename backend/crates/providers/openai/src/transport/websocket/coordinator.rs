@@ -157,6 +157,7 @@ pub(crate) async fn prepare_response_create_request_with_pool(
             request.codex_search_declared == Some(true),
             request.connection().outbound_proxy.as_ref(),
             downstream_cancellation,
+            request.connection(),
         )
         .await
     {
@@ -490,7 +491,7 @@ async fn connect_with_budget(
     }
 }
 
-async fn connect_websocket_connection(
+pub(super) async fn connect_websocket_connection(
     connection: &CodexWebSocketConnection,
     context: PumpLogContext,
     fast_path: bool,

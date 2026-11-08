@@ -9,6 +9,7 @@ use crate::transport::protocol::responses::{
 /// WebSocket opening 描述
 #[derive(Clone)]
 pub struct CodexWebSocketConnection {
+    pub(crate) preconnect_identity: Option<(String, u64)>,
     pub(crate) connection_budget: Option<gateway_core::engine::connection::ConnectionBudget>,
     pub(crate) outbound_proxy: Option<gateway_core::account::OutboundProxy>,
     pub(super) endpoint: String,
@@ -160,6 +161,7 @@ impl CodexWebSocketConnection {
     /// 构造待打开的 WebSocket 连接描述
     pub fn new(endpoint: impl Into<String>, headers: Vec<(String, String)>) -> Self {
         Self {
+            preconnect_identity: None,
             endpoint: endpoint.into(),
             headers,
             permessage_deflate: true,

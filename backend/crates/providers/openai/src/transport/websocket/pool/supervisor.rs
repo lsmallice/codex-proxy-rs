@@ -19,6 +19,7 @@ impl CodexWebSocketPool {
         let mut idle_connections = Vec::new();
         {
             let mut state = self.lock_state();
+            idle_connections.extend(state.preconnect.remove_account(account_id));
             let keys = state
                 .slots
                 .keys()
@@ -50,21 +51,19 @@ impl CodexWebSocketPool {
         let idle_connections = {
             let mut state = self.lock_state();
             state.shutting_down = true;
-            state
-                .slots
-                .drain()
-                .filter_map(|(_, slot)| match slot {
-                    WebSocketPoolSlot::Idle { connection, .. } => Some(*connection),
-                    WebSocketPoolSlot::Connecting(connecting) => {
-                        connecting.cancellation.cancel();
-                        connecting
-                            .outcome
-                            .send_replace(WebSocketPoolConnectOutcome::Failed);
-                        None
-                    }
-                    WebSocketPoolSlot::Busy(_) => None,
-                })
-                .collect::<Vec<_>>()
+            let mut connections = state.preconnect.clear();
+            connections.extend(state.slots.drain().filter_map(|(_, slot)| match slot {
+                WebSocketPoolSlot::Idle { connection, .. } => Some(*connection),
+                WebSocketPoolSlot::Connecting(connecting) => {
+                    connecting.cancellation.cancel();
+                    connecting
+                        .outcome
+                        .send_replace(WebSocketPoolConnectOutcome::Failed);
+                    None
+                }
+                WebSocketPoolSlot::Busy(_) => None,
+            }));
+            connections
         };
         close_pooled_connections(idle_connections).await;
         self.tasks.wait().await;
@@ -72,6 +71,7 @@ impl CodexWebSocketPool {
 
     /// 清扫已关闭、超龄或空闲到期的连接，以及超龄残留的 reservation
     pub async fn maintain_idle_connections(&self) {
+        self.maintain_preconnections().await;
         let close = self.take_expired_slots().await;
         close_pooled_connections(close).await;
     }
@@ -107,6 +107,7 @@ impl CodexWebSocketPool {
         let maintenance_started = Arc::clone(&self.maintenance_started);
         let proxy_capacities = Arc::clone(&self.proxy_capacities);
         let capacity_changed = Arc::clone(&self.capacity_changed);
+        let preconnect_policy = Arc::clone(&self.preconnect_policy);
         drop(self.tasks.spawn(async move {
             let mut interval = tokio::time::interval(interval_duration);
             loop {
@@ -126,6 +127,7 @@ impl CodexWebSocketPool {
                     maintenance_started: Arc::clone(&maintenance_started),
                     proxy_capacities: Arc::clone(&proxy_capacities),
                     capacity_changed: Arc::clone(&capacity_changed),
+                    preconnect_policy: Arc::clone(&preconnect_policy),
                 };
                 if pool.is_shutdown().await {
                     break;

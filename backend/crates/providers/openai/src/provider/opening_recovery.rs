@@ -16,12 +16,13 @@ fn eligible(error: &CodexClientError) -> Option<Option<Duration>> {
     else {
         return None;
     };
-    if *status != reqwest::StatusCode::FORBIDDEN
-        || *transport != CodexBackendTransport::WebSocket
-        || *send_phase != CodexUpstreamSendPhase::BeforePayload
-        || !body.is_empty()
-        || diagnostics.identity_authorization_error.is_some()
-        || diagnostics.identity_error_code.is_some()
+    if *transport != CodexBackendTransport::WebSocket
+        || !crate::transport::diagnostics::empty_opening_rejection(
+            status.as_u16(),
+            body,
+            diagnostics,
+            *send_phase,
+        )
     {
         return None;
     }

@@ -1,5 +1,12 @@
 {
   "forkSettings": {
+    "preconnect": "會話備用 WS 預連線",
+    "preconnectTotal": "實例備用連線上限",
+    "preconnectAccount": "單帳號備用連線上限",
+    "preconnectConnecting": "背景同時握手數",
+    "preconnectRate": "背景每秒握手啟動數",
+    "preconnectTtl": "未領取連線保留時間",
+    "preconnectBackoff": "失敗後暫停補建時間",
     "title": "二開設定",
     "requestCompatibility": "Responses 請求相容",
     "liteContext": "Lite 上下文補正",

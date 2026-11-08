@@ -15,6 +15,8 @@ pub struct OpenAiForkSettings {
     pub request_compatibility: crate::config::CodexRequestCompatibility,
     pub model_unsupported_cooldown_seconds: u64,
     pub ws_opening_recovery: CodexWsOpeningRecovery,
+    #[serde(default)]
+    pub ws_preconnect: crate::config::CodexWsPreconnect,
     pub ws_response_recovery: CodexWsResponseRecovery,
 }
 impl From<&OpenAiConfig> for OpenAiForkSettings {
@@ -23,6 +25,7 @@ impl From<&OpenAiConfig> for OpenAiForkSettings {
             request_compatibility: config.request_compatibility,
             model_unsupported_cooldown_seconds: config.model_unsupported_cooldown_seconds,
             ws_opening_recovery: config.ws_opening_recovery,
+            ws_preconnect: config.ws_preconnect,
             ws_response_recovery: config.ws_response_recovery.clone(),
         }
     }
@@ -61,11 +64,13 @@ impl OpenAiForkSettings {
         candidate.request_compatibility = self.request_compatibility;
         candidate.model_unsupported_cooldown_seconds = self.model_unsupported_cooldown_seconds;
         candidate.ws_opening_recovery = self.ws_opening_recovery;
+        candidate.ws_preconnect = self.ws_preconnect;
         candidate.ws_response_recovery = self.ws_response_recovery;
         candidate.resolve_and_validate(std::path::Path::new("."))?;
         config.model_unsupported_cooldown_seconds = candidate.model_unsupported_cooldown_seconds;
         config.request_compatibility = candidate.request_compatibility;
         config.ws_opening_recovery = candidate.ws_opening_recovery;
+        config.ws_preconnect = candidate.ws_preconnect;
         config.ws_response_recovery = candidate.ws_response_recovery;
         Ok(())
     }

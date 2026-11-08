@@ -1,5 +1,12 @@
 {
   "forkSettings": {
+    "preconnect": "Session standby WS preconnections",
+    "preconnectTotal": "Instance standby connection limit",
+    "preconnectAccount": "Per-account standby connection limit",
+    "preconnectConnecting": "Concurrent background handshakes",
+    "preconnectRate": "Background handshake starts per second",
+    "preconnectTtl": "Unused connection lifetime",
+    "preconnectBackoff": "Pause after failed preparation",
     "title": "Fork Settings",
     "requestCompatibility": "Responses Request Compatibility",
     "liteContext": "Lite context correction",

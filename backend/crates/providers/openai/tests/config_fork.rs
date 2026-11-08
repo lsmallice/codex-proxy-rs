@@ -8,8 +8,37 @@ fn fork_settings_reuse_owner_validation_and_preserve_other_fields() {
     config.stream_max_retries = 7;
     let mut settings = OpenAiForkSettings::from(&config);
     settings.ws_response_recovery.max_retries = 3;
+    settings.ws_preconnect.enabled = true;
     settings.apply(&mut config).unwrap();
     assert_eq!(config.ws_response_recovery.max_retries, 3);
+    assert!(config.ws_preconnect.enabled);
+    for (total, per_account, connecting, rate, ttl, retries, delay, backoff) in [
+        (0, 1, 1, 1, 10, 0, 100, 5),
+        (8193, 1, 1, 1, 10, 0, 100, 5),
+        (8, 9, 1, 1, 10, 0, 100, 5),
+        (8, 8, 9, 1, 10, 0, 100, 5),
+        (8, 8, 1, 0, 10, 0, 100, 5),
+        (8, 8, 1, 1, 601, 0, 100, 5),
+        (8, 8, 1, 1, 10, 6, 100, 5),
+        (8, 8, 1, 1, 10, 0, 99, 5),
+        (8, 8, 1, 1, 10, 0, 100, 0),
+    ] {
+        let mut invalid = OpenAiForkSettings::from(&config);
+        invalid.ws_preconnect = provider_openai::config::CodexWsPreconnect {
+            enabled: true,
+            max_connections: total,
+            max_connections_per_account: per_account,
+            max_connecting: connecting,
+            starts_per_second: rate,
+            idle_timeout_seconds: ttl,
+            max_retries: retries,
+            retry_delay_ms: delay,
+            failure_backoff_seconds: backoff,
+        };
+        assert!(invalid.apply(&mut config).is_err());
+        assert!(config.ws_preconnect.enabled);
+        assert_eq!(config.ws_preconnect.max_connections, 512);
+    }
     assert_eq!(config.api.base_url, "https://example.org/backend-api");
     assert_eq!(config.stream_max_retries, 7);
     assert_eq!(
