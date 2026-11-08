@@ -324,7 +324,9 @@ impl CodexBackendClient {
         websocket_create.connection.outbound_proxy = self.outbound_proxy.clone();
         websocket_create.connection.preconnect_identity =
             self.preconnect_owner.clone().zip(self.credential_revision);
-        websocket_create.connection.connection_budget = self.connection_budget.clone();
+        // WS 冷建连与快路径后台握手均给 HTTP 留一次名额，HTTP 使用原预算视图
+        websocket_create.connection.connection_budget =
+            self.websocket_connection_budget(requirement);
         let (websocket_create, outbound_profile) =
             self.prepare_websocket_request(websocket_create).await?;
         context.trace.cloned().unwrap_or_default().headers(

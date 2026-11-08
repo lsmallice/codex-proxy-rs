@@ -18,7 +18,7 @@ struct State {
 pub struct ConnectionBudget {
     state: Arc<Mutex<State>>,
     now: fn() -> Instant,
-    reserve_next_opening: bool,
+    reserved_openings: u32,
 }
 
 impl Default for ConnectionBudget {
@@ -38,24 +38,27 @@ impl ConnectionBudget {
         Self {
             state: Arc::default(),
             now,
-            reserve_next_opening: false,
+            reserved_openings: 0,
         }
     }
 
-    /// 仅本次恢复使用一半剩余时间并留下一次 opening；已启动的后台连接不受影响
+    /// 本次恢复使用一半剩余时间并再留一次 opening；嵌套预留不能覆盖外层额度
     #[must_use]
     pub fn reserve_next_opening(mut self) -> Self {
-        self.reserve_next_opening = true;
+        self.reserved_openings = self.reserved_openings.saturating_add(1).min(MAX_OPENINGS);
         self
     }
 
+    /// 当前视图可用的次数，不包含为后续传输或换号预留的名额
     #[must_use]
     pub fn remaining_openings(&self) -> u32 {
         let state = self
             .state
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        MAX_OPENINGS.saturating_sub(state.openings)
+        MAX_OPENINGS
+            .saturating_sub(self.reserved_openings)
+            .saturating_sub(state.openings)
     }
 
     /// 在可能建立连接前预约一次 opening；返回本次连接允许使用的剩余时间
@@ -71,12 +74,12 @@ impl ConnectionBudget {
         let started = *state.started.get_or_insert_with(self.now);
         let remaining =
             STARTUP_TIMEOUT.saturating_sub((self.now)().saturating_duration_since(started));
-        let opening_limit = MAX_OPENINGS - u32::from(self.reserve_next_opening);
+        let opening_limit = MAX_OPENINGS - self.reserved_openings;
         if state.openings >= opening_limit || remaining.is_zero() {
             return Err(ConnectionBudgetExhausted);
         }
         state.openings += 1;
-        Ok(Some(if self.reserve_next_opening {
+        Ok(Some(if self.reserved_openings > 0 {
             remaining / 2
         } else {
             remaining

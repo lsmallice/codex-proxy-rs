@@ -71,9 +71,18 @@ pub(super) async fn create(
             "transport.opening_recovery.rejected",
             json!({"status":403,"sendPhase":"before_payload","retry":retries}),
         );
-        if retries < max_retries {
+        // 已发送后的协议恢复不重新启用 opening 预算；发送前沿用请求级共享视图
+        let budget = client
+            .connection_budget()
+            .filter(|budget| budget.startup_remaining().is_some());
+        let websocket_budget = budget.and_then(|_| client.websocket_connection_budget(requirement));
+        let wait = retry_after.unwrap_or(delay);
+        let retry_fits = websocket_budget.as_ref().is_none_or(|budget| {
+            budget.remaining_openings() > 0
+                && budget.remaining().is_some_and(|remaining| remaining > wait)
+        });
+        if retries < max_retries && retry_fits {
             retries += 1;
-            let wait = retry_after.unwrap_or(delay);
             trace.record(
                 "transport.opening_recovery.retry",
                 json!({"retry":retries,"maxRetries":max_retries,"delayMs":wait.as_millis()}),
@@ -89,7 +98,16 @@ pub(super) async fn create(
             tokio::time::sleep(wait).await;
             continue;
         }
-        if !policy.http_fallback || !requirement.allows_pre_send_http_fallback() {
+        let fallback_fits = budget.is_none_or(|budget| {
+            budget.remaining_openings() > 0
+                && budget.remaining().is_some_and(|remaining| {
+                    remaining
+                        >= retry_after
+                            .unwrap_or_default()
+                            .saturating_add(Duration::from_secs(1))
+                })
+        });
+        if !policy.http_fallback || !requirement.allows_pre_send_http_fallback() || !fallback_fits {
             trace.record("transport.opening_recovery.exhausted", json!({"retries":retries,"httpAllowed":requirement.allows_pre_send_http_fallback()}));
             return Err(error);
         }
@@ -102,7 +120,7 @@ pub(super) async fn create(
         }
         trace.record(
             "transport.opening_recovery.fallback",
-            json!({"retries":retries,"transport":"http_sse"}),
+            json!({"retries":retries,"transport":"http_sse","reason":if retries < max_retries {"connection_budget"} else {"retry_limit"}}),
         );
         tracing::info!(
             request_id = context.request_id,

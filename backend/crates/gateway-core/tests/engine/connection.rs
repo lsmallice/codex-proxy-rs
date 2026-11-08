@@ -76,6 +76,26 @@ fn all_transports_share_one_opening_budget_but_other_requests_do_not() {
 }
 
 #[test]
+fn nested_reservations_preserve_http_fallback_and_outer_rotation_budget() {
+    let request = ConnectionBudget::default();
+    let account = request.clone().reserve_next_opening();
+    let websocket = account.clone().reserve_next_opening();
+    assert_eq!(websocket.remaining_openings(), 2);
+    websocket.begin().unwrap();
+    websocket.begin().unwrap();
+    assert_eq!(websocket.remaining_openings(), 0);
+    assert!(websocket.begin().is_err());
+    assert_eq!(account.remaining_openings(), 1);
+    account.begin().unwrap();
+    assert!(account.begin().is_err());
+    assert_eq!(request.remaining_openings(), 1);
+    request.begin().unwrap();
+    assert!(request.begin().is_err());
+    request.complete();
+    assert_eq!(websocket.begin().unwrap(), None);
+}
+
+#[test]
 fn successful_opening_does_not_limit_later_generation_or_protocol_recovery() {
     let request = ConnectionBudget::default();
     request.begin().unwrap();

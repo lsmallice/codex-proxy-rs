@@ -91,14 +91,14 @@ async fn execute(
 
 #[tokio::test]
 async fn retries_opening_then_uses_native_sse_once_with_same_identity() {
-    for retries in [0, 2] {
+    for retries in [0, 2, 3, 5] {
         let store = Arc::new(MemoryAccountStore::default());
         create_account(&store, "acct_provider_contract").await;
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let base = format!("http://{}", listener.local_addr().unwrap());
         let server = tokio::spawn(async move {
             let mut identity = None;
-            for _ in 0..=retries {
+            for _ in 0..=retries.min(2) {
                 let head = denied_opening(&listener, "", "").await;
                 let head = String::from_utf8_lossy(&head).to_ascii_lowercase();
                 let values = head
@@ -189,6 +189,145 @@ async fn successful_retry_sends_one_websocket_payload_without_http() {
 }
 
 #[tokio::test]
+async fn http_fallback_preserves_consumed_and_outer_reserved_openings() {
+    use gateway_core::engine::connection::ConnectionBudget;
+    for (consumed, reserved, websocket_openings) in [
+        (1, false, 2),
+        (2, false, 1),
+        (3, false, 0),
+        (0, true, 2),
+        (1, true, 1),
+        (2, true, 0),
+    ] {
+        let store = Arc::new(MemoryAccountStore::default());
+        create_account(&store, "acct_provider_contract").await;
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let base = format!("http://{}", listener.local_addr().unwrap());
+        let server = tokio::spawn(async move {
+            for _ in 0..websocket_openings {
+                denied_opening(&listener, "", "").await;
+            }
+            let (mut socket, _) = timeout(Duration::from_secs(3), listener.accept())
+                .await
+                .unwrap()
+                .unwrap();
+            assert!(
+                String::from_utf8_lossy(&capture_http_request(&mut socket).await)
+                    .starts_with("POST ")
+            );
+            respond(
+                &mut socket,
+                200,
+                "content-type: text/event-stream\r\n",
+                CAPTURE_COMPLETED_SSE,
+            )
+            .await;
+            assert!(
+                timeout(Duration::from_millis(100), listener.accept())
+                    .await
+                    .is_err()
+            );
+        });
+        let budget = ConnectionBudget::default();
+        for _ in 0..consumed {
+            budget.begin().unwrap();
+        }
+        let local_budget = if reserved {
+            budget.clone().reserve_next_opening()
+        } else {
+            budget.clone()
+        };
+        let ctx = AttemptContext::new(
+            RequestAttemptContext::new(
+                ModelRequestId::new("req_shared_openings").unwrap(),
+                ClientApiKeyId::new("key_openai_contract").unwrap(),
+            )
+            .with_connection_budget(local_budget),
+            NonZeroU32::MIN,
+            SystemTime::now() + Duration::from_secs(30),
+            account_policy(),
+            AccountAttemptContext::new(BTreeSet::new(), None, None)
+                .with_account_scope(contract_account_scope()),
+            None,
+            CancellationToken::new(),
+        );
+        execute(
+            configured(
+                &store,
+                base,
+                CodexWsOpeningRecovery {
+                    max_retries: 5,
+                    ..policy()
+                },
+            ),
+            request(json!({}), false),
+            ctx,
+        )
+        .await
+        .unwrap();
+        assert_eq!(budget.remaining_openings(), u32::from(reserved));
+        server.await.unwrap();
+    }
+}
+
+#[tokio::test]
+async fn slow_last_websocket_opening_leaves_budget_for_native_fast_path_fallback() {
+    let store = Arc::new(MemoryAccountStore::default());
+    create_account(&store, "acct_provider_contract").await;
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let base = format!("http://{}", listener.local_addr().unwrap());
+    let server = tokio::spawn(async move {
+        for _ in 0..2 {
+            denied_opening(&listener, "", "").await;
+        }
+        let (mut slow, _) = listener.accept().await.unwrap();
+        assert!(
+            String::from_utf8_lossy(&capture_http_request(&mut slow).await).starts_with("GET ")
+        );
+        let (mut http, _) = timeout(Duration::from_secs(3), listener.accept())
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(
+            String::from_utf8_lossy(&capture_http_request(&mut http).await).starts_with("POST ")
+        );
+        respond(
+            &mut http,
+            200,
+            "content-type: text/event-stream\r\n",
+            CAPTURE_COMPLETED_SSE,
+        )
+        .await;
+        drop(slow);
+        assert!(
+            timeout(Duration::from_millis(100), listener.accept())
+                .await
+                .is_err()
+        );
+    });
+    let events = execute(
+        configured(
+            &store,
+            base,
+            CodexWsOpeningRecovery {
+                max_retries: 5,
+                ..policy()
+            },
+        ),
+        request(json!({}), false),
+        context("req_slow_opening_fallback", CancellationToken::new()),
+    )
+    .await
+    .unwrap();
+    assert!(events.iter().any(|event| {
+        event
+            .response_observation()
+            .is_some_and(|o| o.transport().as_str() == "http_sse")
+    }));
+    server.await.unwrap();
+}
+
+#[tokio::test]
 async fn disabled_policy_and_explicit_denials_do_not_retry() {
     for (enabled, body, headers) in [
         (false, "", ""),
@@ -259,6 +398,25 @@ async fn disabled_fallback_and_websocket_only_requests_never_post_http() {
             3,
         ),
         (json!({}), true, policy(), 3),
+        (
+            json!({}),
+            true,
+            CodexWsOpeningRecovery {
+                max_retries: 5,
+                ..policy()
+            },
+            4,
+        ),
+        (
+            json!({}),
+            false,
+            CodexWsOpeningRecovery {
+                max_retries: 5,
+                http_fallback: false,
+                ..policy()
+            },
+            3,
+        ),
         (json!({"generate":false}), false, policy(), 1),
     ] {
         let store = Arc::new(MemoryAccountStore::default());
@@ -520,7 +678,14 @@ async fn all_openings_and_sse_use_the_selected_account_proxy() {
         None,
     );
     execute(
-        configured(&store, "http://upstream.invalid".into(), policy()),
+        configured(
+            &store,
+            "http://upstream.invalid".into(),
+            CodexWsOpeningRecovery {
+                max_retries: 5,
+                ..policy()
+            },
+        ),
         request(json!({}), false),
         context("req_opening_proxy", CancellationToken::new()),
     )

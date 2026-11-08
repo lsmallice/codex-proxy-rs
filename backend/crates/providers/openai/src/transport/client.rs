@@ -814,6 +814,25 @@ impl CodexBackendClient {
         self
     }
 
+    pub(crate) fn connection_budget(
+        &self,
+    ) -> Option<&gateway_core::engine::connection::ConnectionBudget> {
+        self.connection_budget.as_ref()
+    }
+
+    pub(crate) fn websocket_connection_budget(
+        &self,
+        requirement: TransportRequirement,
+    ) -> Option<gateway_core::engine::connection::ConnectionBudget> {
+        self.connection_budget.clone().map(|budget| {
+            if requirement.allows_pre_send_http_fallback() {
+                budget.reserve_next_opening()
+            } else {
+                budget
+            }
+        })
+    }
+
     pub(super) fn connection_opening(&self) -> Result<Option<Duration>, CodexClientError> {
         self.connection_budget.as_ref().map_or(Ok(None), |budget| {
             budget
@@ -1207,6 +1226,13 @@ pub(super) fn local_http_fallback_decision(
         }
         CodexWebSocketExchangeError::ContinuationUnavailable { .. } => {
             Some(CodexTransportDecision::Http2PoolUnavailable)
+        }
+        CodexWebSocketExchangeError::Connect(tokio_tungstenite::tungstenite::Error::Io(error))
+            if error.get_ref().is_some_and(|source| {
+                source.is::<gateway_core::engine::connection::ConnectionBudgetExhausted>()
+            }) =>
+        {
+            Some(CodexTransportDecision::Http2WebSocketBudgetExhausted)
         }
         _ => None,
     }
