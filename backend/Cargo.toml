@@ -61,5 +61,5 @@ codegen-units = 1
 panic = "abort"
 
 [patch.crates-io]
-# 固定上游 BEGIN 取消回滚修复，避免未结束事务复用；见 transact-rs/sqlx#4394
-sqlx = { git = "https://github.com/transact-rs/sqlx", rev = "f1e94ec34dd5f11ad6488a3a8ac7988439a3f757" }
+# 保留 BEGIN 取消回滚修复，并允许安全修复后的 libsqlite3-sys；见 transact-rs/sqlx#4394、#4502
+sqlx = { git = "https://github.com/transact-rs/sqlx", rev = "10462fa4414c6c7f1ed1d39bb31678e3b726878c" }
