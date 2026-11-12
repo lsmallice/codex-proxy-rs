@@ -787,7 +787,7 @@ HTTP 请求和每轮 WS response.create 在执行前冻结策略，已开始的�
 
 | 字段 | 作用与边界 |
 | --- | --- |
-| `lite_context` | 明确 Lite 请求补 `reasoning.context=all_turns`；HTTP 以实际请求头为准，WS 当前帧标记优先，明确 false 或非法标记不回退到旧握手头 |
+| `lite_context` | 明确 Lite 请求补 `reasoning.context=all_turns`，并将顶层 `parallel_tool_calls` 固定为布尔 `false`，禁用并行工具调用；HTTP 以实际请求头为准，WS 当前帧标记优先，明确 false 或非法标记不回退到旧握手头 |
 | `store_false` | 在选中 OAuth 账号后、续接状态形成前将 store 统一为布尔 false；API Key 账号不改 |
 | `json_object` | 仅 json_object 且输入消息缺少 JSON 字样时补 developer 指令；不把工具结果、文件名或元数据当作消息文本，不改 json_schema |
 | `min_output_tokens_16` | 将顶层小于 16 的整数 max_output_tokens 提高到 16；缺省、浮点数、字符串、null 和合法整数保持原样 |

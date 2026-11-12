@@ -9,7 +9,7 @@
     "preconnectBackoff": "失败后暂停补建时间",
     "title": "二开配置",
     "requestCompatibility": "Responses 请求兼容",
-    "liteContext": "Lite 上下文补正",
+    "liteContext": "Lite 请求兼容",
     "storeFalse": "OAuth 强制 store=false",
     "jsonObject": "JSON 模式补正",
     "minOutputTokens": "输出预算最低 16 Token",

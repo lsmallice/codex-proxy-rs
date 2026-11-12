@@ -35,7 +35,7 @@ pub(crate) fn apply_selected_request_compatibility(
     result
 }
 
-pub(crate) fn normalize_lite_context(
+pub(crate) fn normalize_lite_request(
     body: &mut Value,
     headers: &reqwest::header::HeaderMap,
     websocket: bool,
@@ -68,18 +68,25 @@ pub(crate) fn normalize_lite_context(
     if !lite {
         return false;
     }
+    let mut changed = body.get("parallel_tool_calls") != Some(&Value::Bool(false));
+    if changed {
+        // Lite 要求显式禁用并行工具，缺省值和字符串 false 都不满足上游合同
+        body.insert("parallel_tool_calls".into(), Value::Bool(false));
+    }
     match body.get_mut("reasoning") {
         None | Some(Value::Null) => {
             body.insert("reasoning".into(), json!({"context":"all_turns"}));
+            changed = true;
         }
         Some(Value::Object(reasoning))
             if reasoning.get("context").and_then(Value::as_str) != Some("all_turns") =>
         {
             reasoning.insert("context".into(), json!("all_turns"));
+            changed = true;
         }
-        _ => return false,
+        _ => {}
     }
-    true
+    changed
 }
 
 fn contains_json(text: &str) -> bool {

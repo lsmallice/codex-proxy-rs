@@ -9,7 +9,7 @@
     "preconnectBackoff": "Pause after failed preparation",
     "title": "Fork Settings",
     "requestCompatibility": "Responses Request Compatibility",
-    "liteContext": "Lite context correction",
+    "liteContext": "Lite request compatibility",
     "storeFalse": "Force OAuth store=false",
     "jsonObject": "JSON mode correction",
     "minOutputTokens": "Minimum output budget of 16 tokens",

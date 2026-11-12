@@ -82,19 +82,72 @@ async fn native_compatibility_oauth_store_correction_keeps_native_continuation_s
 #[tokio::test]
 async fn native_compatibility_ws_marker_overrides_header_but_http_uses_actual_header() {
     for websocket in [false, true] {
-        for marker in [json!("false"), json!(false), Value::Null, json!("true")] {
-            let body = json!({"model":"gpt-5.4","input":"hello","store":false,"client_metadata":{"ws_request_header_x_openai_internal_codex_responses_lite":marker},"reasoning":{"effort":"none"}});
-            let sent =
-                capture_downstream_request_with_policy(body, true, websocket, true, policy()).await;
-            assert_eq!(
-                sent["reasoning"].get("context").and_then(Value::as_str),
-                if !websocket || marker == "true" {
-                    Some("all_turns")
+        for header_lite in [false, true] {
+            for marker in [json!("false"), json!(false), Value::Null, json!("true")] {
+                let body = json!({"model":"gpt-5.4","input":"hello","store":false,"parallel_tool_calls":true,"client_metadata":{"ws_request_header_x_openai_internal_codex_responses_lite":marker},"reasoning":{"effort":"none"}});
+                let sent = capture_downstream_request_with_policy(
+                    body,
+                    true,
+                    websocket,
+                    header_lite,
+                    policy(),
+                )
+                .await;
+                let lite = if websocket {
+                    marker == "true"
                 } else {
-                    None
+                    header_lite
+                };
+                assert_eq!(
+                    sent["reasoning"].get("context").and_then(Value::as_str),
+                    if lite { Some("all_turns") } else { None }
+                );
+                assert_eq!(sent["parallel_tool_calls"], !lite);
+                assert_eq!(sent["reasoning"]["effort"], "none");
+            }
+        }
+    }
+}
+#[tokio::test]
+async fn native_compatibility_lite_disables_parallel_tools_only_when_enabled() {
+    for websocket in [false, true] {
+        for (enabled, lite) in [(true, true), (false, true), (true, false)] {
+            for parallel in [
+                None,
+                Some(Value::Null),
+                Some(json!(true)),
+                Some(json!(false)),
+                Some(json!("false")),
+                Some(json!("true")),
+                Some(json!(0)),
+            ] {
+                let mut body = json!({"model":"gpt-5.4","input":"hello","store":false,"reasoning":{"context":"all_turns","effort":"high"},"tools":[{"type":"function","name":"fixture","parameters":{"type":"object","properties":{"parallel_tool_calls":{"const":true}}}}]});
+                if let Some(value) = &parallel {
+                    body["parallel_tool_calls"] = value.clone();
                 }
-            );
-            assert_eq!(sent["reasoning"]["effort"], "none");
+                let sent = capture_downstream_request_with_policy(
+                    body.clone(),
+                    false,
+                    websocket,
+                    lite,
+                    CodexRequestCompatibility {
+                        lite_context: enabled,
+                        ..Default::default()
+                    },
+                )
+                .await;
+                assert_eq!(
+                    sent.get("parallel_tool_calls"),
+                    if enabled && lite {
+                        Some(&Value::Bool(false))
+                    } else {
+                        parallel.as_ref()
+                    },
+                    "websocket={websocket}, enabled={enabled}, lite={lite}, parallel={parallel:?}"
+                );
+                assert_eq!(sent["reasoning"], body["reasoning"]);
+                assert_eq!(sent["tools"], body["tools"]);
+            }
         }
     }
 }
@@ -112,6 +165,7 @@ async fn native_compatibility_applies_before_send_without_changing_reasoning_eff
             )
             .await;
             assert_eq!(sent["reasoning"]["context"], "all_turns");
+            assert_eq!(sent["parallel_tool_calls"], false);
             assert_eq!(sent["reasoning"]["effort"], "none");
             assert_eq!(sent["reasoning"]["summary"], "auto");
             assert_eq!(
@@ -168,6 +222,14 @@ async fn native_compatibility_flags_are_independent_and_invalid_reasoning_is_pre
         let sent =
             capture_downstream_request_with_policy(body.clone(), false, false, true, p).await;
         assert_eq!(sent["reasoning"], "unexpected");
+        assert_eq!(
+            sent.get("parallel_tool_calls"),
+            if option == "lite" {
+                Some(&Value::Bool(false))
+            } else {
+                None
+            }
+        );
         assert_eq!(sent["store"], json!(option != "store"));
         assert_eq!(
             sent["input"].as_array().unwrap().len(),

@@ -384,10 +384,12 @@ Codex 的 review 等子代理请求仍使用 `/v1/responses`，并通过 `x-open
 仍保留，仅记录拒绝摘要供同范围下一轮自包含请求提前清理，不改变续接授权。
 纯密文不直接删除，普通消息正文、推理摘要和配对工具记录保留，详见部署的响应恢复配置
 
-可选的 `openai.request_compatibility` 在原生 HTTP/WS 请求链处理 Lite 上下文、OAuth
+可选的 `openai.request_compatibility` 在原生 HTTP/WS 请求链处理 Lite 上下文与并行工具参数、OAuth
 store=false、JSON 指令、最低输出预算及工具结构。工具结构规则不删除工具或历史；非法名称
 返回 `400 invalid_tool_name`，无法确定的混合结构返回 `400 invalid_tool_structure`。
 各规则默认关闭，作用范围与副作用见部署说明；不包含推理档位映射
+开启 `lite_context` 时，明确 Lite 请求的顶层 `parallel_tool_calls` 固定为布尔 `false`，
+包括缺省和显式传入其他值的情况；非 Lite 请求保留原值，工具定义与历史调用不变
 
 #### 请求期限
 

@@ -82,7 +82,7 @@ impl CodexBackendClient {
             context.installation_id,
         );
         if upstream_request.lite_context_compat
-            && crate::compat::normalize_lite_context(&mut upstream_body, &headers, false)
+            && crate::compat::normalize_lite_request(&mut upstream_body, &headers, false)
         {
             context.trace.cloned().unwrap_or_default().record(
                 "request.compatibility.lite",
@@ -281,7 +281,7 @@ impl CodexBackendClient {
         profile.apply_context_versions(&mut body);
         super::correlation::scope_request(&mut body, &mut headers, context.installation_id);
         if request.lite_context_compat
-            && crate::compat::normalize_lite_context(&mut body, &headers, true)
+            && crate::compat::normalize_lite_request(&mut body, &headers, true)
         {
             context.trace.cloned().unwrap_or_default().record(
                 "request.compatibility.lite",
