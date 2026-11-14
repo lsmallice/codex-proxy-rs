@@ -871,7 +871,7 @@ HTTP 请求和每轮 WS response.create 在执行前冻结策略，已开始的�
 | `lite_context` | 明确 Lite 请求补 `reasoning.context=all_turns`，并将顶层 `parallel_tool_calls` 固定为布尔 `false`，禁用并行工具调用；HTTP 以实际请求头为准，WS 当前帧标记优先，明确 false 或非法标记不回退到旧握手头 |
 | `store_false` | 在选中 OAuth 账号后、续接状态形成前将 store 统一为布尔 false；API Key 账号不改 |
 | `json_object` | 仅 json_object 且输入消息缺少 JSON 字样时补 developer 指令；不把工具结果、文件名或元数据当作消息文本，不改 json_schema |
-| `min_output_tokens_16` | 将顶层小于 16 的整数 max_output_tokens 提高到 16；缺省、浮点数、字符串、null 和合法整数保持原样 |
+| `min_output_tokens_16` | 入站将顶层小于 16 的整数 max_output_tokens 提高到 16；缺省、浮点数、字符串、null 和合法整数保持原样；最终发往 Responses 上游时仍按原生编码规则省略输出上限 |
 | `tool_structure` | 将 function 工具及 tool_choice 的已知嵌套字段提升为 Responses 格式；保留工具顺序、历史、调用结果和续接 ID，不删除工具、不猜测改名 |
 
 输出预算与工具结构在鉴权后、路由前应用，仅匹配 `/v1/responses`、`/responses` 的
@@ -1203,6 +1203,8 @@ alpha、beta、rc、exp 在 GitHub 标记为 Pre-release，不覆盖 GitHub Late
 
 实际切回官方前，备份数据库与运行数据，在隔离环境检查迁移 checksum 和插件合同，
 同步 YAML / Compose 的更新源及镜像并保留数据卷。官方版不应用二开冷却、重试和插件容量配置。
+本二开的 `0041_managed_ipv6_proxies.sql` 与官方同编号迁移不同，后续官方 schema 变更在二开中按新编号追加。
+两条发行线不能直接共用已迁移的数据库，也不能通过改写 `_sqlx_migrations` 校验和强行切换。
 本视图没有执行换版入口，不能代替完整迁移流程
 
 在线更新要求发行构建且起始版本不低于 **v3.18.1**，版本选择遵循上述规则；普通源码构建返回不支持原因，不提供可用更新。

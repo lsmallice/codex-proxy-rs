@@ -12,8 +12,8 @@ fn policy() -> CodexRequestCompatibility {
 }
 
 #[tokio::test]
-async fn native_compatibility_applies_minimum_after_official_oauth_token_alias_normalization() {
-    for alias in ["max_tokens", "max_completion_tokens"] {
+async fn native_compatibility_preserves_oauth_output_limit_omission() {
+    for alias in ["max_tokens", "max_completion_tokens", "max_output_tokens"] {
         for enabled in [false, true] {
             let mut body = json!({"model":"gpt-5.4","input":"hello","store":false});
             body[alias] = json!(1);
@@ -24,7 +24,7 @@ async fn native_compatibility_applies_minimum_after_official_oauth_token_alias_n
             let sent =
                 capture_downstream_request_with_policy(body, false, false, false, policy).await;
             assert!(sent.get(alias).is_none());
-            assert_eq!(sent["max_output_tokens"], if enabled { 16 } else { 1 });
+            assert!(sent.get("max_output_tokens").is_none());
         }
     }
 }

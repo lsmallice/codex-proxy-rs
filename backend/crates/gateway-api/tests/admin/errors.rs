@@ -429,6 +429,7 @@ mod provider {
                 json!({
                     "usedSlots": used_slots,
                     "totalSlots": total_slots,
+                    "handoffLimit": null,
                 })
             );
         }

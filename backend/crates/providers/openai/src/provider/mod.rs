@@ -1204,20 +1204,6 @@ impl CodexProvider {
                 &middleware_headers,
                 context.request_id().as_str(),
             );
-            // 官方 OAuth 归一化可由旧字段生成输出上限，仍需应用显式启用的最低预算
-            if self.request_compatibility.min_output_tokens_16
-                && (upstream_model.as_str().starts_with("gpt-")
-                    || upstream_model.as_str().starts_with("codex-"))
-                && upstream_request
-                    .body()
-                    .get("max_output_tokens")
-                    .and_then(Value::as_i64)
-                    .is_some_and(|value| value < 16)
-            {
-                upstream_request
-                    .body_mut()
-                    .insert("max_output_tokens".into(), json!(16));
-            }
         }
         if let Some(location) = lease
             .account()
