@@ -26,13 +26,14 @@ use gateway_core::{
     lifecycle::{ConnectionGuard, ConnectionLifecycle},
     operation::OperationKind,
 };
+use gateway_protocol::openai::OPENAI_PROTOCOL;
 
 use crate::middleware::headers::encode_headers;
 use crate::{
     ApiState,
     openai::middleware::{RequestInput, invoke_request, request_parts},
     openai::{
-        auth::{authenticate_client, client_access_error_response},
+        auth::{ClientKeyHeaders, authenticate_client, client_access_error_response},
         error::runtime_unavailable_response,
         service::OpenAiService,
     },
@@ -65,7 +66,7 @@ pub(crate) async fn responses_websocket(
     websocket: Upgrade,
 ) -> Response {
     let service = state.openai().clone();
-    let client = match authenticate_client(&service, &headers).await {
+    let client = match authenticate_client(&service, &headers, ClientKeyHeaders::Bearer).await {
         Ok(client) => client,
         Err(error) => return client_access_error_response(error),
     };
@@ -328,7 +329,7 @@ async fn serve_responses_websocket(socket: Socket, session: ResponsesWebSocketSe
         let validation = ResponseValidationFacts::default();
         let input = RequestInput {
             endpoint: crate::openai::router::RESPONSES_PATH.to_owned(),
-            protocol: "openai".to_owned(),
+            protocol: OPENAI_PROTOCOL.to_owned(),
             operation: Some(OperationKind::Generate),
             transport: ClientTransport::WebSocket,
             model_hint,
@@ -349,7 +350,7 @@ async fn serve_responses_websocket(socket: Socket, session: ResponsesWebSocketSe
             Box::new(move |prepared, request| {
                 Box::pin(async move {
                     let (protocol, headers, body) = request_parts(request.clone())?;
-                    if protocol != "openai" {
+                    if protocol != OPENAI_PROTOCOL {
                         return Err(MiddlewareError::Rejected);
                     }
                     let payload =
@@ -365,7 +366,7 @@ async fn serve_responses_websocket(socket: Socket, session: ResponsesWebSocketSe
                         .prepare(decoded)
                         .with_middleware_capabilities(&request)?;
                     let started = service_for_terminal
-                        .start_prepared_response(
+                        .start_prepared_generation(
                             prepared,
                             decoded,
                             ClientTransport::WebSocket,

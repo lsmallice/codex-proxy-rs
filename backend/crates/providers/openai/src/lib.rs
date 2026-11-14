@@ -155,7 +155,11 @@ pub async fn initialize(
         http.clone(),
         config.base_url().to_owned(),
         ports.catalog_cache(),
+        ports.runtime_policy(),
     ));
+    if let Err(error) = catalog.restore().await {
+        tracing::warn!(%error,"OpenAI model catalog could not be restored");
+    }
     let quota = Arc::new(CodexCredentialQuotaService::new(
         repository.clone(),
         profile.clone(),
@@ -183,8 +187,8 @@ pub async fn initialize(
             Arc::clone(&account_feedback),
             CodexCookiePolicy::official().map_err(|_| OpenAiInitializeError::CookiePolicy)?,
             std::time::Duration::from_secs(config.model_unsupported_cooldown_seconds),
+            upstream_info,
         )
-        .with_upstream_info(upstream_info)
         .with_handoffs(ports.handoffs())
         .with_preconnect(config.ws_preconnect.enabled),
     );

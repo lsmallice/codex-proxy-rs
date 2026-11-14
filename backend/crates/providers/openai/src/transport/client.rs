@@ -82,17 +82,11 @@ pub(super) fn build_account_http_client_with_timeout(
     }
 
     // 连接池与 TCP、HTTP/2 保活沿用官方 Core 的 reqwest 默认值
-    let mut builder = Client::builder()
-        .no_proxy()
+    let builder = gateway_egress::http_client(proxy)
+        .map_err(|_| CustomCaError::ProxyConfiguration)?
         .redirect(reqwest::redirect::Policy::none())
         .connect_timeout(timeout)
         .connector_layer(super::connection::ConnectionLayer);
-    if let Some(proxy) = proxy {
-        builder = builder.proxy(
-            reqwest::Proxy::all(proxy.expose_url())
-                .map_err(|_| CustomCaError::ProxyConfiguration)?,
-        );
-    }
     let client = build_reqwest_client_with_custom_ca(builder)?;
     let mut clients = cache
         .lock()
@@ -110,7 +104,7 @@ fn egress_key(account_id: &str, proxy: Option<&gateway_core::account::OutboundPr
     hash.update([0]);
     hash.update(
         proxy
-            .map_or("direct", |proxy| proxy.expose_url())
+            .map_or("deployment", |proxy| proxy.expose_url())
             .as_bytes(),
     );
     hex::encode(hash.finalize())
@@ -590,6 +584,7 @@ pub enum CodexTransportDecision {
     ExactWebSocket,
     RequiredWebSocket,
     Http2WebSocketBudgetExhausted,
+    Http2WebSocketMessageTooLarge,
     Http2LocalConnectionCapacity,
     Http2BreakerOpen,
     Http2PoolUnavailable,
@@ -604,6 +599,7 @@ impl CodexTransportDecision {
             Self::ExactWebSocket => "ws_exact_required",
             Self::RequiredWebSocket => "ws_required",
             Self::Http2WebSocketBudgetExhausted => "http2_ws_budget_exhausted",
+            Self::Http2WebSocketMessageTooLarge => "http2_ws_message_too_large",
             Self::Http2LocalConnectionCapacity => "http2_local_connection_capacity",
             Self::Http2BreakerOpen => "http2_breaker_open",
             Self::Http2PoolUnavailable => "http2_pool_unavailable",
@@ -683,6 +679,7 @@ pub struct CodexBackendJsonResponse {
 pub(super) enum OpenAiUpstreamProtocol {
     Codex,
     ResponsesApi,
+    MessagesApi,
 }
 
 impl OpenAiUpstreamProtocol {
@@ -690,6 +687,7 @@ impl OpenAiUpstreamProtocol {
         match self {
             Self::Codex => super::endpoints::CODEX_RESPONSES_PATH,
             Self::ResponsesApi => "/responses",
+            Self::MessagesApi => "/messages",
         }
     }
 }
@@ -699,6 +697,7 @@ impl OpenAiUpstreamProtocol {
 pub struct CodexBackendClient {
     pub(super) preconnect_owner: Option<String>,
     pub(super) credential_revision: Option<u64>,
+    pub(crate) peer_route: Option<reqwest::header::HeaderValue>,
     pub(super) routing_affinity: Option<super::routing_affinity::ChatGptRoutingAffinity>,
     pub(super) privacy: Option<(
         Arc<dyn gateway_core::settings::privacy::CompiledPrivacyPolicy>,
@@ -707,7 +706,7 @@ pub struct CodexBackendClient {
     pub(super) timezone: gateway_core::time::DeploymentTimeZone,
     pub(super) connection_budget: Option<gateway_core::engine::connection::ConnectionBudget>,
     pub(super) client: Client,
-    pub(super) direct_client: Client,
+    pub(super) default_client: Client,
     pub(super) base_url: String,
     pub(super) official_base_url: String,
     pub(super) protocol: OpenAiUpstreamProtocol,
@@ -744,13 +743,14 @@ impl CodexBackendClient {
     ) -> Self {
         let base_url = base_url.into().trim_end_matches('/').to_string();
         Self {
+            peer_route: None,
             routing_affinity: None,
             preconnect_owner: None,
             credential_revision: None,
             privacy: None,
             timezone: Default::default(),
             connection_budget: None,
-            direct_client: client.clone(),
+            default_client: client.clone(),
             client,
             websocket_origin_key: websocket_origin_key(&base_url),
             outbound_proxy: None,
@@ -901,6 +901,12 @@ impl CodexBackendClient {
         self
     }
 
+    pub(crate) fn with_messages_api_base_url(self, base_url: &str) -> Self {
+        let mut client = self.with_responses_api_base_url(Some(base_url));
+        client.protocol = OpenAiUpstreamProtocol::MessagesApi;
+        client
+    }
+
     pub fn for_account(
         &self,
         account: &gateway_core::account::ProviderAccount,
@@ -913,6 +919,10 @@ impl CodexBackendClient {
             client
                 .egress_key
                 .push_str(&format!(":revision:{}", account.revision().get()));
+        } else {
+            client
+                .egress_key
+                .push_str(&crate::credential::oauth_identity_key(account));
         }
         client.websocket_origin_key = format!(
             "{}:{}",
@@ -922,7 +932,7 @@ impl CodexBackendClient {
         client.client = if account.outbound_proxy().is_some() {
             build_account_http_client(account.id().as_str(), account.outbound_proxy())?
         } else {
-            self.direct_client.clone()
+            self.default_client.clone()
         };
         Ok(client)
     }
@@ -1227,10 +1237,12 @@ pub(super) fn local_http_fallback_decision(
         CodexWebSocketExchangeError::ContinuationUnavailable { .. } => {
             Some(CodexTransportDecision::Http2PoolUnavailable)
         }
-        CodexWebSocketExchangeError::Connect(tokio_tungstenite::tungstenite::Error::Io(error))
-            if error.get_ref().is_some_and(|source| {
-                source.is::<gateway_core::engine::connection::ConnectionBudgetExhausted>()
-            }) =>
+        CodexWebSocketExchangeError::Connect {
+            source: tokio_tungstenite::tungstenite::Error::Io(error),
+            ..
+        } if error.get_ref().is_some_and(|source| {
+            source.is::<gateway_core::engine::connection::ConnectionBudgetExhausted>()
+        }) =>
         {
             Some(CodexTransportDecision::Http2WebSocketBudgetExhausted)
         }

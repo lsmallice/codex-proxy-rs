@@ -220,12 +220,34 @@ impl fmt::Debug for ClientVisibleUpstreamError {
     }
 }
 
+/// 本次建连的代理诊断，仅用于管理端展示，不参与错误处置
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ProxyConnectionHint {
+    InvalidConfiguration,
+    Unreachable,
+    TunnelFailed,
+    CheckProxy,
+}
+
+impl ProxyConnectionHint {
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::InvalidConfiguration => "invalid_configuration",
+            Self::Unreachable => "unreachable",
+            Self::TunnelFailed => "tunnel_failed",
+            Self::CheckProxy => "check_proxy",
+        }
+    }
+}
+
 /// Provider 已分类为可安全持久化和展示的诊断摘要
 ///
 /// Adapter 只能放入不含凭据、cookie、原始请求正文和 opaque response ID 的有界摘要；
 /// 原始上游错误返回由 [`RawUpstreamError`] 单独承载
 #[derive(Clone, PartialEq, Eq)]
 pub struct ProviderDiagnostic {
+    proxy_hint: Option<ProxyConnectionHint>,
     message: String,
     stage: Option<&'static str>,
     code: Option<&'static str>,
@@ -236,9 +258,21 @@ impl ProviderDiagnostic {
     pub fn new(message: impl Into<String>) -> Self {
         Self {
             message: message.into(),
+            proxy_hint: None,
             stage: None,
             code: None,
         }
+    }
+
+    #[must_use]
+    pub const fn with_proxy_hint(mut self, hint: ProxyConnectionHint) -> Self {
+        self.proxy_hint = Some(hint);
+        self
+    }
+
+    #[must_use]
+    pub const fn proxy_hint(&self) -> Option<ProxyConnectionHint> {
+        self.proxy_hint
     }
 
     /// 附着本地定义的阶段与原因码；独立于发送状态和重试策略
@@ -482,6 +516,7 @@ pub struct ProviderError {
     failure_observation: Option<Box<ProviderErrorFailureObservation>>,
     replay_safe: bool,
     retry_prohibited: bool,
+    same_account_retry_blocked: bool,
     pre_delivery_retry: Option<Box<PreDeliveryRetry>>,
     credential_recovery_required: bool,
     retry_same_account: bool,
@@ -525,6 +560,7 @@ impl ProviderError {
             failure_observation: None,
             replay_safe: false,
             retry_prohibited: false,
+            same_account_retry_blocked: false,
             pre_delivery_retry: None,
             credential_recovery_required: false,
             retry_same_account: false,
@@ -657,6 +693,22 @@ impl ProviderError {
     #[must_use]
     pub const fn retry_is_prohibited(&self) -> bool {
         self.retry_prohibited
+    }
+
+    /// 保留已选择的耗尽策略，但禁止执行同账号退避和传输恢复
+    ///
+    /// Provider 在上游明确拒绝继续使用当前账号时设置
+    /// Core 不根据错误码自行推断
+    #[must_use]
+    pub const fn with_same_account_retry_blocked(mut self) -> Self {
+        self.same_account_retry_blocked = true;
+        self
+    }
+
+    /// 返回上游是否拒绝继续重试当前账号
+    #[must_use]
+    pub const fn same_account_retry_blocked(&self) -> bool {
+        self.same_account_retry_blocked
     }
 
     /// 允许 Core 仅在客户端尚未收到任何事件时执行一次受预算约束的换号恢复
@@ -982,6 +1034,7 @@ impl ProviderError {
             failure_observation: self.failure_observation.clone(),
             replay_safe: self.replay_safe,
             retry_prohibited: self.retry_prohibited,
+            same_account_retry_blocked: self.same_account_retry_blocked,
             pre_delivery_retry: self.pre_delivery_retry.clone(),
             credential_recovery_required: self.credential_recovery_required,
             retry_same_account: self.retry_same_account,
@@ -1010,6 +1063,10 @@ impl fmt::Debug for ProviderError {
             )
             .field("retry_after", &self.retry_after)
             .field("retry_prohibited", &self.retry_prohibited)
+            .field(
+                "same_account_retry_blocked",
+                &self.same_account_retry_blocked,
+            )
             .field("continuation_failure", &self.continuation_failure)
             .field(
                 "continuation_recovery_disposition",
@@ -1082,6 +1139,8 @@ impl std::error::Error for ProviderError {
 pub enum GatewayErrorKind {
     /// 请求无效
     InvalidRequest,
+    /// 请求再次进入已经过的部署
+    PeerRoutingLoop,
     /// 请求能力不支持
     Unsupported,
     /// 下游认证失败
@@ -1123,6 +1182,7 @@ impl GatewayErrorKind {
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::InvalidRequest => "invalid_request",
+            Self::PeerRoutingLoop => gateway_protocol::peer::ROUTING_LOOP_CODE,
             Self::Unsupported => "unsupported",
             Self::Unauthorized => "unauthorized",
             Self::PolicyDenied => "policy_denied",
@@ -1214,6 +1274,17 @@ impl GatewayError {
     #[must_use]
     pub fn from_provider(error: &ProviderError) -> Self {
         let gateway = match error.kind() {
+            ProviderErrorKind::InvalidRequest
+                if gateway_protocol::peer::is_routing_loop(
+                    error.upstream_status(),
+                    error.upstream_code().map(|code| code.as_str()),
+                ) =>
+            {
+                Self::new(
+                    GatewayErrorKind::PeerRoutingLoop,
+                    "Peer routing loop detected.",
+                )
+            }
             ProviderErrorKind::InvalidRequest => Self::new(
                 GatewayErrorKind::InvalidRequest,
                 "Invalid upstream request.",

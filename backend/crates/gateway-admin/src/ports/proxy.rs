@@ -5,12 +5,19 @@ use gateway_core::account::{OutboundProxy, ProviderAccountId};
 
 use super::store::AdminStoreResult;
 use crate::model::{
-    MutationContext, Revision,
+    AdminError, MutationContext, Revision,
     proxies::{
         ImportProxyBinding, NewProxy, ProxyAccountListQuery, ProxyAccountPage, ProxyListQuery,
         ProxyMutation, ProxyPage, ProxyRecord, ProxyTestResult, UpdateProxy,
     },
 };
+
+/// 插件受管网络读取代理的窄端口，连接配置仅供宿主发送请求
+#[async_trait]
+pub trait PluginProxyAccess: Send + Sync {
+    async fn list(&self, query: ProxyListQuery) -> Result<ProxyPage, AdminError>;
+    async fn resolve(&self, id: &str) -> Result<OutboundProxy, AdminError>;
+}
 
 #[async_trait]
 pub trait ProxyStore: Send + Sync {
@@ -62,8 +69,14 @@ pub struct ProxyImportReservation {
     pub guard: Box<dyn ProxyImportGuard>,
 }
 
+#[derive(Clone, Copy)]
+pub enum ProbeRoute<'a> {
+    Direct,
+    Deployment,
+    Proxy(&'a OutboundProxy),
+}
+
 #[async_trait]
 pub trait ProxyProbe: Send + Sync {
-    /// 未指定代理时探测服务器直连出口，不继承进程代理环境变量
-    async fn test(&self, proxy: Option<&OutboundProxy>, detect_location: bool) -> ProxyTestResult;
+    async fn test(&self, proxy: ProbeRoute<'_>, detect_location: bool) -> ProxyTestResult;
 }

@@ -157,9 +157,11 @@ pub async fn run() -> Result<(), BootstrapError> {
     let mut probes = store.health_probes();
     probes.extend(core.health_probes());
     probes.push(host.logging_health_probe());
+    let peer_node = or_shutdown!(plugin_runtime, store.peer_routing_id().await);
     let api = or_shutdown!(
         plugin_runtime,
         gateway_api::initialize(
+            peer_node,
             api_config,
             core.execution_service(),
             match config.fork_settings {

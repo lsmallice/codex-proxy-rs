@@ -19,7 +19,7 @@ use axum::{
 use bytes::Bytes;
 use futures::{SinkExt, StreamExt, future::BoxFuture};
 use gateway_api::openai::responses::{
-    DecodedResponsesRequest, OpenAiRequestHeaders, ResponseCreateFrameError,
+    DecodedGenerationRequest, OpenAiRequestHeaders, ResponseCreateFrameError,
     decode_response_create_with_context,
 };
 use gateway_core::account::ProviderAccountId;
@@ -69,7 +69,7 @@ use crate::openai::{
 fn decode_response_create_with_turn_header(
     payload: Value,
     opening_turn_metadata: &'static str,
-) -> DecodedResponsesRequest {
+) -> DecodedGenerationRequest {
     let mut headers = HeaderMap::new();
     headers.insert(
         "x-codex-turn-metadata",
@@ -1114,6 +1114,7 @@ async fn websocket_disconnect_during_core_settlement_finishes_charge_before_rele
     let lifecycle = Arc::new(SettlementConnectionLifecycle::default());
     let admin = crate::admin::AdminTestFixture::new().await;
     let app = gateway_api::initialize(
+        uuid::Uuid::nil(),
         gateway_api::ApiConfig {
             responses_policy_source: None,
             responses_compatibility: Default::default(),

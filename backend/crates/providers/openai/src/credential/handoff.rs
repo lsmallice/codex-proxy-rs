@@ -39,7 +39,7 @@ pub(super) async fn prepare(
             && c.account.credential_state() == CredentialState::Ready
             && c.account.quota().access() == QuotaAccessState::Allowed
             && c.account.status_projection(now, c.signals.cooldown).status == AccountStatus::Normal
-            && scope.allows_current_account(&c.account)
+            && scope.allows(c.account.id())
             && !excluded.contains(c.account.id())
     };
     let mut ready = candidates.iter().filter(available).collect::<Vec<_>>();

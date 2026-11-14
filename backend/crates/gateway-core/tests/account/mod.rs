@@ -4,6 +4,7 @@ mod handoff;
 mod location;
 mod model_access;
 mod proxy;
+mod quota_reset_priority;
 mod scope;
 mod selection;
 mod selection_diagnostics;
@@ -58,6 +59,7 @@ fn candidate(id: &str, in_flight: u32, remaining: Option<u64>) -> AccountCandida
             in_flight,
             last_started_at: None,
             quota_reset_at: None,
+            quota_reset_windows: None,
             quota_remaining_rank: remaining,
             cooldown: None,
             failure_rate_basis_points: None,
@@ -231,6 +233,7 @@ fn diagnostic_selection_bypasses_all_local_account_eligibility() {
             in_flight: 0,
             last_started_at: None,
             quota_reset_at: None,
+            quota_reset_windows: None,
             quota_remaining_rank: None,
             cooldown: None,
             failure_rate_basis_points: None,
@@ -251,6 +254,7 @@ fn diagnostic_selection_bypasses_all_local_account_eligibility() {
             in_flight: 0,
             last_started_at: None,
             quota_reset_at: None,
+            quota_reset_windows: None,
             quota_remaining_rank: None,
             cooldown: None,
             failure_rate_basis_points: None,
@@ -645,6 +649,7 @@ fn provider_quota_overlay_should_preserve_store_concurrency_facts() {
         in_flight: 2,
         last_started_at: Some(last_started_at),
         quota_reset_at: None,
+        quota_reset_windows: None,
         quota_remaining_rank: None,
         cooldown: None,
         failure_rate_basis_points: None,

@@ -23,7 +23,8 @@ pub(crate) use affinity::{
     CodexSessionAffinity, derive_cache_preference, derive_codex_cyber_policy_session_key,
     derive_codex_endpoint_session_affinity, derive_codex_session_affinity,
     derive_codex_transport_key, derive_endpoint_affinity_with_headers,
-    derive_live_session_affinity, derive_previous_response_id_hash, derive_turn_alias,
+    derive_live_session_affinity, derive_messages_session_affinity,
+    derive_previous_response_id_hash, derive_turn_alias,
 };
 pub(crate) use eligibility::CodexSelectionModel;
 pub(crate) use oauth::oauth_owner_ref;
@@ -31,17 +32,19 @@ pub(crate) use types::parse_access_token_expiration;
 
 pub(crate) use crate::CODEX_AUTHENTICATION_KIND_API_KEY;
 
-pub use api_key::{ApiKeyAuthentication, ApiKeyConfiguration, ApiKeyCredentialData};
+pub use api_key::{
+    ApiKeyAuthentication, ApiKeyConfiguration, ApiKeyCredentialData, ApiKeyProtocol,
+};
 
 pub use admin::{
     CodexCprExportDocument, CodexCredentialAdmin, CodexCredentialAdminError,
     CodexCredentialAdminService, ExportManagedCodexCredential, ImportCodexOAuthCredential,
     PreparedCodexAccountImport, PreparedCodexCredentialRotation,
-    PreparedCodexCredentialRotationGuard, RotateManagedCodexCredential,
+    PreparedCodexCredentialRotationGuard,
 };
 pub use catalog::{
-    CodexCatalogScope, CodexCredentialCatalogError, CodexCredentialCatalogService,
-    CodexCredentialCatalogSnapshot, CodexPlanCatalog,
+    CodexAccountCatalog, CodexCatalogScope, CodexCredentialCatalogError,
+    CodexCredentialCatalogService, CodexCredentialCatalogSnapshot,
 };
 pub use codec::{
     CodexCredentialCodec, CodexCredentialDataError, CodexRuntimeAuthentication,
@@ -73,6 +76,7 @@ pub use selector::{
     SelectCodexCredential,
 };
 pub(crate) use selector::{CodexCyberPolicyScope, SelectCodexProviderEndpointCredential};
+pub(crate) use types::oauth_identity_key;
 pub use types::{
     CODEX_AUTHENTICATION_KIND_OAUTH, CodexAccountProfile, CodexCookie, CodexCookieCaptureOutcome,
     CodexCredentialData, CodexCredentialPrincipal, CodexOAuthCredentialData, CodexOAuthSecret,

@@ -171,6 +171,7 @@ async fn manual_proxy_is_exclusive_and_other_accounts_cannot_reuse_it() {
     let error = super::admin_account_store(&db.pool)
         .batch_update_accounts(
             gateway_admin::model::accounts::BatchUpdateAccounts {
+                quota_limits: None,
                 auto_use_quota_credits: None,
                 account_ids: vec!["acct_other".to_owned()],
                 enabled: None,
@@ -182,6 +183,7 @@ async fn manual_proxy_is_exclusive_and_other_accounts_cannot_reuse_it() {
                     proxy.clone(),
                 )),
             },
+            Default::default(),
             &context(),
         )
         .await

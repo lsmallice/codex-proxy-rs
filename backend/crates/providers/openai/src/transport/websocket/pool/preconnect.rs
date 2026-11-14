@@ -497,14 +497,16 @@ fn retry_delay(
             error.retry_after_seconds
         }
         CodexWebSocketExchangeError::ConnectTimeout { .. } => None,
-        CodexWebSocketExchangeError::Connect(tungstenite::Error::Io(error))
-            if matches!(
-                error.kind(),
-                std::io::ErrorKind::ConnectionReset
-                    | std::io::ErrorKind::ConnectionAborted
-                    | std::io::ErrorKind::TimedOut
-                    | std::io::ErrorKind::ConnectionRefused
-            ) =>
+        CodexWebSocketExchangeError::Connect {
+            source: tungstenite::Error::Io(error),
+            ..
+        } if matches!(
+            error.kind(),
+            std::io::ErrorKind::ConnectionReset
+                | std::io::ErrorKind::ConnectionAborted
+                | std::io::ErrorKind::TimedOut
+                | std::io::ErrorKind::ConnectionRefused
+        ) =>
         {
             None
         }

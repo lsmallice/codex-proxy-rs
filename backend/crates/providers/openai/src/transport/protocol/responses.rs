@@ -498,6 +498,8 @@ pub struct ResponsesSseFailure {
     pub explicit_status_code: Option<u16>,
     /// 上游显式重试间隔，或从官方限流消息中解析出的重试间隔
     pub retry_after_seconds: Option<u64>,
+    /// 上游 `x-retry-metadata: NO_MORE_RETRY`，与重试间隔独立
+    pub no_more_retry: bool,
     /// 当前错误事件自身携带的请求 ID；不是连接 opening ID
     pub(crate) request_id: Option<String>,
     /// 上游错误事件的原始 JSON data；只应在明确的失败审计边界读取
@@ -514,6 +516,7 @@ impl fmt::Debug for ResponsesSseFailure {
             .field("has_upstream_type", &self.upstream_type.is_some())
             .field("explicit_status_code", &self.explicit_status_code)
             .field("retry_after_seconds", &self.retry_after_seconds)
+            .field("no_more_retry", &self.no_more_retry)
             .finish()
     }
 }
@@ -533,6 +536,7 @@ impl ResponsesSseFailure {
             upstream_type: failure_type(value),
             explicit_status_code: failure_explicit_status_code(value),
             retry_after_seconds: events::retry_after_seconds_from_value(value),
+            no_more_retry: events::upstream_no_more_retry(value),
             request_id:
                 crate::transport::diagnostics::CodexUpstreamDiagnostics::error_event_request_id(
                     value,
@@ -771,19 +775,11 @@ impl CodexResponsesRequest {
         &self,
         previous_reasoning_effort_override: Option<&str>,
     ) -> CodexRequestSemantics {
-        let mut semantics = codex_responses_request_semantics_with_turn_metadata(
+        codex_responses_request_semantics_with_turn_metadata(
             self.body(),
             self.turn_metadata.as_deref(),
             previous_reasoning_effort_override,
-        );
-        // 官方 generate=false 只准备连接与上下文，不是模型推理
-        // 预热分类参与用量筛选，不能仅凭客户端的 request_kind 提示排除真实推理
-        if !self.generate() {
-            semantics.request_kind = Some("prewarm".to_owned());
-        } else if semantics.request_kind.as_deref() == Some("prewarm") {
-            semantics.request_kind = None;
-        }
-        semantics
+        )
     }
 
     /// 返回请求语义与 child transport 隔离所用的子代理区分值

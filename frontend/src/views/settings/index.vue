@@ -94,6 +94,7 @@ const {
   error,
   form,
   smartSchedulingDefaults,
+  quotaResetWindowWeightsDefaults,
   mappings,
   addMapping,
   updateMapping,
@@ -210,7 +211,9 @@ watch(section, (value) => {
           <RotationStrategyCard
             v-model="form.rotationStrategy"
             v-model:smart-scheduling="form.smartScheduling"
+            v-model:quota-reset-window-weights="form.quotaResetWindowWeights"
             :smart-defaults="smartSchedulingDefaults"
+            :quota-reset-defaults="quotaResetWindowWeightsDefaults"
             :disabled="disabled"
             :options="rotationOptions"
           />
@@ -233,11 +236,12 @@ watch(section, (value) => {
           <AccountErrorProtectionCard v-model="form.accountErrorProtection" :disabled="disabled" />
           <AccountWarmupCard
             v-model:enabled="form.accountWarmupEnabled"
-            v-model:schedule-time="form.accountWarmupScheduleTime"
+            v-model:cron="form.accountWarmupCron"
             v-model:model="form.accountWarmupModel"
           />
           <ResetCreditCard
             v-model="resetCreditLeadMinutesValue"
+            v-model:on-low-weekly-quota="form.resetCreditOnLowWeeklyQuota"
             v-model:max-weekly-remaining-percent="resetCreditMaxWeeklyRemainingPercentValue"
           />
           <RequestHistoryCard v-model="usageRetentionDaysValue" />

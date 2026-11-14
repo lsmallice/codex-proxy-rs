@@ -152,6 +152,7 @@ async fn blocked_relay(
         ..LiveCapture::default()
     });
     let router = gateway_api::initialize(
+        uuid::Uuid::nil(),
         gateway_api::ApiConfig {
             responses_policy_source: None,
             responses_compatibility: Default::default(),

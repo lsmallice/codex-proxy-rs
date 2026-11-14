@@ -13,6 +13,7 @@ fn cookie_provider(store: &Arc<MemoryAccountStore>, base_url: String) -> Arc<Cod
         http.clone(),
         base_url.clone(),
         catalog_cache(),
+        crate::support::runtime_policy(),
     ));
     let quota = Arc::new(CodexCredentialQuotaService::new(
         store.repository(),
@@ -38,6 +39,7 @@ fn cookie_provider(store: &Arc<MemoryAccountStore>, base_url: String) -> Arc<Cod
         Duration::from_secs(
             provider_openai::OpenAiConfig::default().model_unsupported_cooldown_seconds,
         ),
+        store.clone(),
     ));
     Arc::new(
         CodexProvider::new(

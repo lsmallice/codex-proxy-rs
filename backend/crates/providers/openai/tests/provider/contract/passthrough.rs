@@ -11,7 +11,8 @@ async fn responses_options_follow_the_selected_upstream_on_both_transports() {
         "truncation": "disabled", "stop_sequences": [], "prompt_cache_options": {}
     });
     let mut body = json!({
-        "model": "gpt-5.4", "input": "hello", "max_tokens": 16,
+        "model": "gpt-5.4", "input": "hello",
+        "max_output_tokens": 1, "max_completion_tokens": 32, "max_tokens": 64,
         "stream_options": {"include_usage": true, "reasoning_summary_delivery": "sequential_cutoff"},
         "client_metadata": {"user": "keep"},
         "tools": [{"type": "function", "name": "sample", "parameters": {
@@ -30,17 +31,19 @@ async fn responses_options_follow_the_selected_upstream_on_both_transports() {
                     "{field}, api_key={api_key}, websocket={websocket}"
                 );
             }
+            for field in ["max_output_tokens", "max_completion_tokens", "max_tokens"] {
+                assert!(
+                    sent.get(field).is_none(),
+                    "{field}, api_key={api_key}, websocket={websocket}"
+                );
+            }
             if api_key {
                 assert_eq!(sent["stream_options"], body["stream_options"]);
-                assert_eq!(sent["max_tokens"], 16);
-                assert!(sent.get("max_output_tokens").is_none());
             } else {
                 assert_eq!(
                     sent["stream_options"],
                     json!({"reasoning_summary_delivery": "sequential_cutoff"})
                 );
-                assert_eq!(sent["max_output_tokens"], 16);
-                assert!(sent.get("max_tokens").is_none());
             }
             assert_eq!(sent["client_metadata"]["user"], "keep");
             assert_eq!(sent["tools"], body["tools"]);
@@ -49,25 +52,15 @@ async fn responses_options_follow_the_selected_upstream_on_both_transports() {
 }
 
 #[tokio::test]
-async fn codex_oauth_keeps_explicit_limits_and_context_options() {
-    for (native, completion, expected) in [
-        (json!(16), json!(32), json!(16)),
-        (Value::Null, json!(32), json!(32)),
-        (Value::Null, Value::Null, json!(64)),
-    ] {
-        let body = json!({
-            "model": "gpt-5.4", "input": "hello", "max_output_tokens": native,
-            "max_completion_tokens": completion, "max_tokens": 64,
-            "truncation": "auto", "stop_sequences": ["end"],
-            "prompt_cache_options": {"future_option": true}
-        });
-        let sent = capture_downstream_request(body.clone(), false, false, false).await;
-        assert_eq!(sent["max_output_tokens"], expected);
-        assert!(sent.get("max_completion_tokens").is_none());
-        assert!(sent.get("max_tokens").is_none());
-        for key in ["truncation", "stop_sequences", "prompt_cache_options"] {
-            assert_eq!(sent[key], body[key]);
-        }
+async fn codex_oauth_keeps_explicit_context_options() {
+    let body = json!({
+        "model": "gpt-5.4", "input": "hello",
+        "truncation": "auto", "stop_sequences": ["end"],
+        "prompt_cache_options": {"future_option": true}
+    });
+    let sent = capture_downstream_request(body.clone(), false, false, false).await;
+    for key in ["truncation", "stop_sequences", "prompt_cache_options"] {
+        assert_eq!(sent[key], body[key]);
     }
 }
 
@@ -299,4 +292,31 @@ async fn websocket_messages_preserve_text_and_metadata_despite_unrecognized_json
     server.await.unwrap();
     assert!(completed);
     assert_eq!(&delivered[1..delivered.len() - 1], messages);
+}
+
+#[tokio::test]
+async fn responses_service_tiers_reach_each_upstream_on_both_transports() {
+    for tier in [
+        None,
+        Some(Value::Null),
+        Some(json!("auto")),
+        Some(json!("default")),
+        Some(json!("priority")),
+        Some(json!("flex")),
+    ] {
+        for api_key in [false, true] {
+            for websocket in [false, true] {
+                let mut body = json!({"model":"gpt-5.4","input":"hello"});
+                if let Some(tier) = &tier {
+                    body["service_tier"] = tier.clone();
+                }
+                let sent = capture_downstream_request(body, api_key, websocket, false).await;
+                assert_eq!(
+                    sent.get("service_tier"),
+                    tier.as_ref(),
+                    "api_key={api_key}, websocket={websocket}"
+                );
+            }
+        }
+    }
 }

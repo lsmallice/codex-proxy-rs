@@ -61,7 +61,7 @@ async fn fixture_with_config(
     let runtime = Arc::new(OpenAiForkRuntime::new(OpenAiForkSettings::from(&config)));
     config.fork_runtime = Some(runtime.clone());
     let leases = Arc::new(TestLeaseCoordinator::default());
-    let (provider, _, pool) = provider_and_quota_with_runtime_ports(
+    let (provider, _, pool, _) = provider_and_quota_with_runtime_ports(
         &store,
         Arc::new(MemorySessionAffinity::default()),
         base,

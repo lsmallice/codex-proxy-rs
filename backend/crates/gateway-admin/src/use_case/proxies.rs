@@ -25,10 +25,50 @@ use crate::{
     ports::{
         ipv6::{Ipv6Controller, Ipv6ProxyStore},
         provider::ProviderAdminRegistry,
-        proxy::{ProxyProbe, ProxyStore},
+        proxy::{PluginProxyAccess, ProbeRoute, ProxyProbe, ProxyStore},
         store::AdminStoreErrorKind,
     },
 };
+
+pub(crate) struct DefaultPluginProxyAccess {
+    pub(crate) store: Arc<dyn ProxyStore>,
+}
+
+#[async_trait]
+impl PluginProxyAccess for DefaultPluginProxyAccess {
+    async fn list(&self, query: ProxyListQuery) -> Result<ProxyPage, AdminError> {
+        list_proxies(self.store.as_ref(), query).await
+    }
+
+    async fn resolve(&self, id: &str) -> Result<OutboundProxy, AdminError> {
+        if id.is_empty() || id.len() > 128 || id.chars().any(char::is_control) {
+            return Err(AdminError::invalid("代理 ID 不合法"));
+        }
+        let record = self
+            .store
+            .get(id)
+            .await
+            .map_err(|error| map_store_error(error, "proxy"))?;
+        // 显式选择代理时必须有可用配置，不能沿用账号停用代理后使用部署默认出口的语义
+        if !record.enabled {
+            return Err(AdminError::invalid("代理已禁用，请启用后再选择"));
+        }
+        Ok(record.proxy)
+    }
+}
+
+async fn list_proxies(
+    store: &dyn ProxyStore,
+    query: ProxyListQuery,
+) -> Result<ProxyPage, AdminError> {
+    if query.page == 0 || query.search.len() > 256 || query.search.chars().any(char::is_control) {
+        return Err(AdminError::invalid("代理查询参数不合法"));
+    }
+    store
+        .list(query)
+        .await
+        .map_err(|error| map_store_error(error, "proxy"))
+}
 
 #[async_trait]
 pub trait ProxiesService: Send + Sync {
@@ -97,10 +137,10 @@ pub trait ProxiesService: Send + Sync {
         detect_location: bool,
         context: &MutationContext,
     ) -> Result<ProxyRecord, AdminError>;
-    /// 探测未保存的连接地址或服务器直连出口，不写入配置或修改账号绑定
+    /// 探测未保存的连接地址、部署默认出口或服务器直连出口，不写入配置或修改账号绑定
     async fn probe(
         &self,
-        proxy: Option<&OutboundProxy>,
+        proxy: ProbeRoute<'_>,
         detect_location: bool,
     ) -> Result<ProxyTestResult, AdminError>;
 }
@@ -424,14 +464,7 @@ impl ProxiesService for DefaultProxiesService {
     }
 
     async fn list(&self, query: ProxyListQuery) -> Result<ProxyPage, AdminError> {
-        if query.page == 0 || query.search.len() > 256 || query.search.chars().any(char::is_control)
-        {
-            return Err(AdminError::invalid("代理查询参数不合法"));
-        }
-        self.store
-            .list(query)
-            .await
-            .map_err(|error| map_store_error(error, "proxy"))
+        list_proxies(self.store.as_ref(), query).await
     }
 
     async fn create(
@@ -446,7 +479,7 @@ impl ProxiesService for DefaultProxiesService {
             .transpose()
             .map_err(|_| AdminError::invalid("代理位置不合法"))?;
         command.test = if command.auto_location {
-            Some(self.probe(Some(&command.proxy), true).await?)
+            Some(self.probe(ProbeRoute::Proxy(&command.proxy), true).await?)
         } else {
             None
         };
@@ -500,7 +533,7 @@ impl ProxiesService for DefaultProxiesService {
             if command.auto_location.unwrap_or(current.auto_location)
                 && (!current.auto_location || proxy != &current.proxy)
             {
-                command.test = Some(self.probe(Some(proxy), true).await?);
+                command.test = Some(self.probe(ProbeRoute::Proxy(proxy), true).await?);
             }
         }
         let result = self
@@ -539,7 +572,7 @@ impl ProxiesService for DefaultProxiesService {
 
     async fn probe(
         &self,
-        proxy: Option<&OutboundProxy>,
+        proxy: ProbeRoute<'_>,
         detect_location: bool,
     ) -> Result<ProxyTestResult, AdminError> {
         let _permit = self
@@ -571,7 +604,10 @@ impl ProxiesService for DefaultProxiesService {
         // 手动解析只为本次测试请求位置，不改变自动跟随的持久配置
         let result = self
             .probe
-            .test(Some(&record.proxy), record.auto_location || detect_location)
+            .test(
+                ProbeRoute::Proxy(&record.proxy),
+                record.auto_location || detect_location,
+            )
             .await;
         let mutation = self
             .store

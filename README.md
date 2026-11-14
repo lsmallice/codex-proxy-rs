@@ -20,7 +20,7 @@
 `lsmallice/codex-proxy-rs` 的发行物，不会自动合并上游代码。首次切换与发布要求见[二开版本更新](deploy/README.md#二开版本更新)
 
 > [!NOTE]
-> 本项目提供 Responses API 和 Chat Completions API；Chat Completions 请求通过 Responses 链路执行，支持范围见 [API 参考](docs/api.md#chat-completions-请求)
+> 生成请求支持 [OpenAI Responses](docs/api.md#responses-请求与传输)、[Chat Completions](docs/api.md#chat-completions-请求) 和 [Anthropic Messages](docs/api.md#messages-请求) 三种协议
 
 ## 快速预览
 
@@ -43,7 +43,8 @@
 
 以下命令适用于 Linux amd64/arm64，需要 Docker Engine、Docker Compose Plugin、curl 和 OpenSSL
 
-Windows x64 / ARM64 使用发行包部署，步骤见 [Windows 二进制部署](deploy/README.md#windows-二进制部署)
+macOS 从[发行页](https://github.com/zyycn/codex-proxy-rs/releases)下载对应的归档：Intel 机型选 `darwin_amd64`，Apple Silicon 机型选 `darwin_arm64`。
+Windows x64 / ARM64 的安装步骤见 [Windows 二进制部署](deploy/README.md#windows-二进制部署)
 
 已有部署请先看 [升级说明](deploy/README.md#镜像升级与源码构建)，不要覆盖原配置
 
@@ -102,12 +103,12 @@ API Key 持有者可在登录页切换身份，查看自己的用量与额度，
 
 完整步骤、生图配置与排障见[客户端配置](deploy/README.md#客户端配置)
 
-**其他 Responses / Chat Completions API 客户端**：填写以下信息：
+**其他 API 客户端**：API Key 填写管理端创建的客户端密钥。按客户端自动追加的请求路径填写 Base URL；远程接入时将本机地址换成服务器的 HTTPS 地址
 
-| 配置 | 值 |
+| 客户端自动追加的路径 | Base URL（本机部署） |
 | --- | --- |
-| Base URL | `http://127.0.0.1:8080/v1`；远程接入使用服务器的 HTTPS 地址 |
-| API Key | 管理端创建的客户端密钥 |
+| OpenAI Responses：`/responses`；Chat Completions：`/chat/completions` | `http://127.0.0.1:8080/v1` |
+| Anthropic Messages：`/v1/messages` | `http://127.0.0.1:8080` |
 
 查询该密钥可见的模型目录：
 

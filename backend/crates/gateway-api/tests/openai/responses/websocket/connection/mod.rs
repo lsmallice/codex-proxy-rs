@@ -847,6 +847,7 @@ async fn start_active_response_with(
     let app = if let Some(plan) = plan {
         let admin = crate::admin::AdminTestFixture::new().await;
         gateway_api::initialize(
+            uuid::Uuid::nil(),
             gateway_api::ApiConfig {
                 responses_policy_source: None,
                 responses_compatibility: Default::default(),

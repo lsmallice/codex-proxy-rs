@@ -76,8 +76,9 @@ watch(
     />
     <FloatingSidebarToggle v-show="!mobileSidebarOpen" @open="openMobileSidebar" />
     <main class="relative isolate h-dvh min-w-0 flex-1 overflow-hidden">
-      <ZScrollbar ref="pageScrollbarRef">
-        <div class="flex min-h-full min-w-0 flex-col p-4 min-[961px]:p-6">
+      <!-- 让主滚动区自身绘制不透明底色，浏览器可在合成线程滚动 -->
+      <ZScrollbar ref="pageScrollbarRef" class="[&>.z-scrollbar-hidden]:bg-z-bg-layout">
+        <div class="page-slot flex min-h-full min-w-0 flex-col p-4 min-[961px]:p-6">
           <RouterView v-slot="{ Component }">
             <component :is="Component" class="min-h-0 flex-1" />
           </RouterView>
@@ -87,7 +88,7 @@ watch(
 
     <Teleport to="body">
       <Transition name="mobile-sidebar" @after-leave="restoreFocus">
-        <div v-if="mobileSidebarOpen" :inert="!mobileSidebarOpen" role="presentation" class="fixed inset-0 z-50 min-[961px]:hidden" @keydown="handleKeydown">
+        <div v-if="mobileSidebarOpen" :inert="!mobileSidebarOpen" role="presentation" class="fixed inset-x-0 top-(--app-titlebar-inset,0px) bottom-0 z-50 min-[961px]:hidden" @keydown="handleKeydown">
           <button
             type="button"
             tabindex="-1"

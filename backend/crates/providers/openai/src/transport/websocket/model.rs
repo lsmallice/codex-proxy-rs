@@ -103,6 +103,7 @@ pub enum PreviousResponseUnavailableReason {
     LatestResponseMismatch,
     ReusedConnectionLost,
     UpstreamRejected,
+    PayloadTooLarge,
 }
 
 impl PreviousResponseUnavailableReason {
@@ -114,6 +115,7 @@ impl PreviousResponseUnavailableReason {
             Self::ConnectionBusy => "connection_busy",
             Self::LatestResponseMismatch => "latest_response_mismatch",
             Self::ReusedConnectionLost => "reused_connection_lost",
+            Self::PayloadTooLarge => "transport_payload_too_large",
             Self::UpstreamRejected => "upstream_rejected",
         }
     }
@@ -158,6 +160,17 @@ impl CodexWebSocketRequest {
 }
 
 impl CodexWebSocketConnection {
+    pub(crate) fn set_peer_route(&mut self, path: Option<&str>) {
+        self.headers
+            .retain(|(name, _)| !name.eq_ignore_ascii_case(gateway_protocol::peer::ROUTE_HEADER));
+        if let Some(path) = path {
+            self.headers.push((
+                gateway_protocol::peer::ROUTE_HEADER.to_owned(),
+                path.to_owned(),
+            ));
+        }
+    }
+
     /// 构造待打开的 WebSocket 连接描述
     pub fn new(endpoint: impl Into<String>, headers: Vec<(String, String)>) -> Self {
         Self {

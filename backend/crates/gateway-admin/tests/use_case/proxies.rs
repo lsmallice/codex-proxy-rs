@@ -4,7 +4,7 @@ use async_trait::async_trait;
 use gateway_admin::{
     model::{MutationContext, Revision, proxies::*},
     ports::{
-        proxy::{ProxyProbe, ProxyStore},
+        proxy::{ProbeRoute, ProxyProbe, ProxyStore},
         store::AdminStoreResult,
     },
 };
@@ -84,8 +84,13 @@ impl ProxyStore for TestProxies {
             guard: Box::new(ImportGuard(events.clone())),
         })
     }
-    async fn list(&self, _: ProxyListQuery) -> AdminStoreResult<ProxyPage> {
-        Err(super::unavailable("proxy"))
+    async fn list(&self, query: ProxyListQuery) -> AdminStoreResult<ProxyPage> {
+        Ok(ProxyPage {
+            items: self.records.clone(),
+            total: self.records.len() as u64,
+            page: query.page,
+            page_size: query.page_size.get(),
+        })
     }
     async fn list_accounts(
         &self,
@@ -142,9 +147,83 @@ impl ProxyStore for TestProxies {
     }
 }
 
+#[tokio::test]
+async fn plugin_proxy_resolution_requires_enabled_configuration_without_account_or_probe() {
+    use gateway_admin::model::{AdminErrorKind, PageSize};
+    use std::sync::Arc;
+
+    let now = chrono::Utc::now();
+    let records: Vec<_> = [true, false]
+        .into_iter()
+        .map(|enabled| ProxyRecord {
+            managed_ipv6: None,
+            id: format!("proxy_{enabled}"),
+            name: "Login".into(),
+            proxy: OutboundProxy::parse("http://user:secret@127.0.0.1:8080").unwrap(),
+            revision: Revision::new(1).unwrap(),
+            enabled,
+            auto_location: false,
+            location: None,
+            detected_location: None,
+            account_count: 0,
+            last_test_at: Some(now),
+            last_test: Some(ProxyTestResult {
+                location: Default::default(),
+                success: false,
+                latency_ms: 1,
+                exit_ip: None,
+                exit_ipv4: None,
+                exit_ipv6: None,
+                message: "fixture failure".into(),
+            }),
+            created_at: now,
+            updated_at: now,
+        })
+        .collect();
+    let access = gateway_admin::initialize_plugin_proxies(Arc::new(TestProxies {
+        records: records.clone(),
+        ..Default::default()
+    }));
+    assert_eq!(
+        access.resolve("proxy_true").await.unwrap(),
+        records[0].proxy
+    );
+    assert_eq!(
+        access.resolve("proxy_false").await.unwrap_err().kind(),
+        AdminErrorKind::Invalid
+    );
+    assert!(access.resolve("missing").await.is_err());
+    for id in ["", "bad\n", &"x".repeat(129)] {
+        assert_eq!(
+            access.resolve(id).await.unwrap_err().kind(),
+            AdminErrorKind::Invalid
+        );
+    }
+    let query = || ProxyListQuery {
+        page: 1,
+        page_size: PageSize::new(10).unwrap(),
+        search: String::new(),
+    };
+    let page = access.list(query()).await.unwrap();
+    assert_eq!(page.items.len(), 2);
+    assert!(!page.items[1].enabled);
+    for invalid in [
+        ProxyListQuery { page: 0, ..query() },
+        ProxyListQuery {
+            search: "bad\n".into(),
+            ..query()
+        },
+    ] {
+        assert_eq!(
+            access.list(invalid).await.unwrap_err().kind(),
+            AdminErrorKind::Invalid
+        );
+    }
+}
+
 #[async_trait]
 impl ProxyProbe for TestProxies {
-    async fn test(&self, _: Option<&OutboundProxy>, _: bool) -> ProxyTestResult {
+    async fn test(&self, _: ProbeRoute<'_>, _: bool) -> ProxyTestResult {
         panic!("unexpected proxy probe")
     }
 }
@@ -232,6 +311,7 @@ async fn linked_accounts_share_plan_resolution_and_only_read_cached_quota() {
     ] {
         let provider = FakeProviderAdmin::new("openai", events());
         provider.set_quota(ProviderQuota {
+            paused_windows: Vec::new(),
             upstream: None,
             credits: None,
             plan_type: cached.map(str::to_owned),
@@ -406,7 +486,7 @@ impl Drop for ActiveProbe<'_> {
 
 #[async_trait]
 impl ProxyProbe for GatedProxyProbe {
-    async fn test(&self, _: Option<&OutboundProxy>, _: bool) -> ProxyTestResult {
+    async fn test(&self, _: ProbeRoute<'_>, _: bool) -> ProxyTestResult {
         self.active
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let _active = ActiveProbe(&self.active);
@@ -477,8 +557,8 @@ async fn batch_tests_share_capacity_preserve_order_and_release_slots_on_cancella
         _ = async { receiver.recv().await.unwrap(); receiver.recv().await.unwrap(); } => {}
     }
     assert_eq!(probe.active.load(Ordering::Relaxed), 2);
-    let mut single_a = Box::pin(services.proxies().probe(None, false));
-    let mut single_b = Box::pin(services.proxies().probe(None, false));
+    let mut single_a = Box::pin(services.proxies().probe(ProbeRoute::Direct, false));
+    let mut single_b = Box::pin(services.proxies().probe(ProbeRoute::Direct, false));
     tokio::select! {
         _ = &mut batch => panic!("batch unexpectedly finished"),
         _ = &mut single_a => panic!("single probe unexpectedly finished"),
@@ -489,7 +569,7 @@ async fn batch_tests_share_capacity_preserve_order_and_release_slots_on_cancella
     assert_eq!(
         services
             .proxies()
-            .probe(None, false)
+            .probe(ProbeRoute::Direct, false)
             .await
             .unwrap_err()
             .kind(),
