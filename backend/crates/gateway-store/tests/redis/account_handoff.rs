@@ -285,6 +285,12 @@ async fn handoff_latest_limit_is_atomic_even_with_stale_unlimited_admission() {
     let store = bundle.provider_ports().handoffs().unwrap();
     let leases = bundle.provider_ports().leases();
     let mut start = state();
+    // Bundle 的命名空间来自数据库，重复运行需隔离账号，避免上一轮未回收租约干扰
+    let run_id = Uuid::new_v4();
+    let old_id = format!("acct_old_{run_id}");
+    let new_id = format!("acct_new_{run_id}");
+    start.old_account_id.clone_from(&old_id);
+    start.new_account_id.clone_from(&new_id);
     start.old_limit = 50;
     store.start(start.clone()).await.unwrap();
     let request = |id: &str, handoff: Option<String>| {
@@ -300,7 +306,7 @@ async fn handoff_latest_limit_is_atomic_even_with_stale_unlimited_admission() {
         )
     };
     let results = futures::future::join_all(
-        (0..150).map(|_| leases.try_acquire(request("acct_old", Some(start.id.clone())))),
+        (0..150).map(|_| leases.try_acquire(request(&old_id, Some(start.id.clone())))),
     )
     .await;
     let old_guards = results
@@ -312,7 +318,7 @@ async fn handoff_latest_limit_is_atomic_even_with_stale_unlimited_admission() {
         .collect::<Vec<_>>();
     assert_eq!(old_guards.len(), 50);
     let results =
-        futures::future::join_all((0..150).map(|_| leases.try_acquire(request("acct_new", None))))
+        futures::future::join_all((0..150).map(|_| leases.try_acquire(request(&new_id, None))))
             .await;
     let new_guards = results
         .into_iter()
@@ -326,7 +332,7 @@ async fn handoff_latest_limit_is_atomic_even_with_stale_unlimited_admission() {
     cancelled.phase = AccountHandoffPhase::Cancelled;
     assert!(store.update(cancelled, 1, 0).await.unwrap());
     assert!(matches!(
-        leases.try_acquire(request("acct_old", None)).await.unwrap(),
+        leases.try_acquire(request(&old_id, None)).await.unwrap(),
         ProviderLeaseAcquisition::Acquired(_)
     ));
     drop((old_guards, new_guards));
