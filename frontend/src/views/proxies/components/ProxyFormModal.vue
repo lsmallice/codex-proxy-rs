@@ -159,7 +159,7 @@ function clearForm() {
           v-model="proxyUrl"
           show-password
           autocomplete="new-password"
-          :disabled="busy"
+          :disabled="busy || !!proxy?.managedIpv6"
           :aria-label="t('proxies.editor.proxyAddress')"
           :placeholder="t('proxies.editor.addressPlaceholder')"
         />

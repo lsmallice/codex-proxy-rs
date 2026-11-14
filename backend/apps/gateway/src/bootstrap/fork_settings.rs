@@ -16,6 +16,14 @@ struct Values {
 }
 fn validate(mut value: serde_json::Value) -> Result<serde_json::Value, AdminError> {
     // 已保存配置只补新增安全默认值，其他缺失或未知字段仍严格拒绝
+    if let Some(plugins) = value
+        .get_mut("plugins")
+        .and_then(serde_json::Value::as_object_mut)
+    {
+        plugins
+            .entry("maintenance_intervals_seconds")
+            .or_insert_with(|| serde_json::json!({}));
+    }
     if let Some(openai) = value
         .get_mut("openai")
         .and_then(serde_json::Value::as_object_mut)

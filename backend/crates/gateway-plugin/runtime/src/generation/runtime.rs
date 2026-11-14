@@ -42,6 +42,7 @@ use tokio::sync::{Mutex, Semaphore};
 const RUNTIME_SHUTDOWN_GRACE: Duration = Duration::from_secs(2);
 pub(super) const MAXIMUM_PARALLEL_PREPARATIONS: usize = 2;
 pub struct PluginRuntimeConfig {
+    pub maintenance_intervals_seconds: BTreeMap<String, u64>,
     pub cache_directory: PathBuf,
     pub host_version: semver::Version,
     pub package_limits: PackageLimits,

@@ -124,7 +124,7 @@ watch([
             <Search class="size-4.5 text-z-text-tertiary" />
           </template>
         </ZInput>
-        <ZButton type="primary" class="ml-auto shrink-0" :disabled="removing || !proxy?.enabled" @click="showAssign = true">
+        <ZButton type="primary" class="ml-auto shrink-0" :disabled="removing || !proxy?.enabled || !!proxy?.managedIpv6?.ownerAccountId || (!!proxy?.managedIpv6 && proxy.managedIpv6.state !== 'active')" @click="showAssign = true">
           <template #icon>
             <Plus class="size-4" />
           </template>

@@ -136,6 +136,7 @@ async fn authorization_uses_selected_proxy_regardless_of_probe_status() {
                 .accounts(FakeAccountStore::new(kind, events.clone()))
                 .proxies(Arc::new(TestProxies {
                     record: Some(ProxyRecord {
+                        managed_ipv6: None,
                         enabled: true,
                         auto_location: false,
                         detected_location: None,
@@ -408,6 +409,7 @@ async fn batch_tests_share_capacity_preserve_order_and_release_slots_on_cancella
     let now = chrono::Utc::now();
     let records = (0..4)
         .map(|i| ProxyRecord {
+            managed_ipv6: None,
             id: format!("proxy_{i}"),
             name: format!("Proxy {i}"),
             proxy: OutboundProxy::parse("http://proxy.example:8080").unwrap(),

@@ -8,6 +8,7 @@ pub mod client_distribution;
 pub mod client_keys;
 pub mod credentials;
 pub mod import_tasks;
+pub(crate) mod ipv6;
 pub mod key_usage;
 pub mod observability;
 pub mod peer_link;

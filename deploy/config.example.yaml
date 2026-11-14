@@ -7,6 +7,11 @@
 
 schema_version: 1
 
+# 插件周期按实例覆盖，未配置的实例保持 30 秒，修改后需重启
+# plugins:
+#   maintenance_intervals_seconds:
+#     '<plugin-instance-uuid>': 5
+
 host:
   # 统一展示、查询日期、限额重置和定时任务的 IANA 时区，修改后重启生效。
   timezone: 'Asia/Shanghai'
@@ -39,6 +44,12 @@ host:
   #   self_restart_enabled: true
   #   executable_path: '/opt/codex-proxy-rs/codex-proxy-rs' # 可选：覆盖启动时解析的程序路径。
   worker_shutdown_timeout_seconds: 30
+  # 可选宿主 IPv6 分配服务，示例网段须替换为运营商实际路由的 CIDR
+  # ipv6_egress:
+  #   id: 'primary'
+  #   control_url: 'http://172.18.0.1:11881'
+  #   token: '<private-controller-token>'
+  #   prefix: '2001:db8:1234:1::/80'
 
 store:
   database:

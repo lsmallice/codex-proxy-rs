@@ -182,6 +182,7 @@ async fn connect(
         pool.clone(),
         observability_query_budget.clone(),
     ));
+    let proxies = Arc::new(postgres::PgProxyRepository::new(pool.clone()));
     let admin_ports = AdminStorePorts::new(
         AdminAccountStorePorts::new(
             Arc::new(postgres::PgAdminAccountStore::new(
@@ -197,7 +198,7 @@ async fn connect(
                 )
                 .with_timezone(config.timezone),
             ),
-            Arc::new(postgres::PgProxyRepository::new(pool.clone())),
+            proxies,
         ),
         Arc::new(AuthStoreAdapter {
             keys: postgres::PgAdminClientKeyStore::new(pool.clone()),
@@ -223,7 +224,8 @@ async fn connect(
         plugins.clone(),
         plugins,
         usage_data,
-    );
+    )
+    .with_ipv6(Arc::new(postgres::PgIpv6Repository::new(pool.clone())));
 
     let execution_repository = Arc::new(postgres::PgExecutionStore::new(pool.clone()));
     let (execution, execution_writer) =

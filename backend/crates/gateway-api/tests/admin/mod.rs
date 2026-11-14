@@ -242,6 +242,7 @@ impl AdminTestFixture {
                 snapshot: Arc::new(NoopSnapshot),
                 account_probe: Arc::new(NoopProbe),
                 proxy_probe: Arc::new(proxies::SuccessfulProbe),
+                ipv6_controller: None,
                 client_distribution: Arc::new(StaticClientDistribution),
                 system,
                 client_key_verifier: verifier.unwrap_or_else(|| Arc::new(UnusedClientKeyVerifier)),

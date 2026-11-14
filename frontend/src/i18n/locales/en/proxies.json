@@ -174,6 +174,32 @@
       "enableFirst": "Enable this proxy before assigning accounts",
       "assignAction": "Assign ({count})",
       "assigned": "Assigned {count} account to “{name}” | Assigned {count} accounts to “{name}”"
+    },
+    "ipv6": {
+      "open": "IPv6 egress",
+      "title": "Dedicated IPv6 egress",
+      "name": "Allocation name",
+      "namePlaceholder": "For example, refill account",
+      "allocate": "Allocate address",
+      "retire": "Retire",
+      "empty": "No IPv6 allocations",
+      "unconfigured": "IPv6 control service is not configured",
+      "available": "Available",
+      "unavailable": "Unavailable",
+      "refresh": "Refresh allocations",
+      "autoBind": "Allocate IPv6 for new accounts",
+      "autoHelp": "Only new accounts without an explicit proxy are held until binding succeeds, existing proxies are preserved",
+      "checkRequest": "Check this allocation",
+      "retireHelp": "Retired addresses are never reused, linked accounts must be unlinked or deleted first",
+      "states": {
+        "queued": "Queued",
+        "allocating": "Allocating",
+        "unknown": "Unconfirmed",
+        "pending": "Binding pending",
+        "active": "Active",
+        "retiring": "Retiring",
+        "retired": "Retired"
+      }
     }
   }
 }

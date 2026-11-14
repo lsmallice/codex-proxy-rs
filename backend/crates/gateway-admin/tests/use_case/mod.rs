@@ -313,6 +313,7 @@ impl AdminHarness {
                 snapshot: self.snapshot,
                 account_probe: self.probe,
                 proxy_probe: self.proxy_probe,
+                ipv6_controller: None,
                 client_distribution: Arc::new(NoopClientDistribution),
                 system: self.system,
                 client_key_verifier: self.client_key_verifier,

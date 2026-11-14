@@ -28,12 +28,26 @@ fn saved_fork_settings_override_yaml_on_startup_and_reject_invalid_files() {
     let mut saved = serde_json::json!({"schema":1,"values":values});
     saved["values"]["openai"]["model_unsupported_cooldown_seconds"] = serde_json::json!(0);
     saved["values"]["openai"]["ws_response_recovery"]["max_retries"] = serde_json::json!(3);
+    saved["values"]["plugins"]["maintenance_intervals_seconds"] =
+        serde_json::json!({"a0f1ee31-0005-8e2a-bfd9-30e7de51c321":5});
     let path = runtime.path().join("fork-settings.json");
     fs::write(&path, saved.to_string()).unwrap();
     let (loaded, _directory) = parse_config(&document.to_string()).unwrap();
     let debug = format!("{loaded:?}");
     assert!(debug.contains("model_unsupported_cooldown_seconds: 0"));
     assert!(debug.contains("max_retries: 3"));
+    assert!(
+        debug.contains(
+            "maintenance_intervals_seconds: {\"a0f1ee31-0005-8e2a-bfd9-30e7de51c321\": 5}"
+        )
+    );
+    saved["values"]["plugins"]
+        .as_object_mut()
+        .unwrap()
+        .remove("maintenance_intervals_seconds");
+    fs::write(&path, saved.to_string()).unwrap();
+    let (legacy, _) = parse_config(&document.to_string()).unwrap();
+    assert!(format!("{legacy:?}").contains("maintenance_intervals_seconds: {}"));
     assert!(!debug.contains(POSTGRES_PASSWORD));
     saved["values"]["openai"]
         .as_object_mut()

@@ -70,6 +70,7 @@ pub struct ProxyTestResult {
 
 #[derive(Debug, Clone)]
 pub struct ProxyRecord {
+    pub managed_ipv6: Option<super::ipv6::Ipv6LeaseView>,
     pub enabled: bool,
     pub auto_location: bool,
     pub detected_location: Option<DetectedProxyLocation>,

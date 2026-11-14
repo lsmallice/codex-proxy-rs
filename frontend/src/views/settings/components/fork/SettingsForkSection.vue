@@ -16,6 +16,18 @@ const view = computed({
   set: (value: string) => { viewingActive.value = value === 'active' },
 })
 const selectedPlugin = ref<string>()
+const selectedMaintenance = ref<string>()
+const maintenanceOptions = computed(() => plugins.value.filter(p => displayed.value?.plugins.maintenance_intervals_seconds[p.id] === undefined).map(p => ({ label: p.name, value: p.id })))
+function addMaintenance() {
+  if (!selectedMaintenance.value || !displayed.value || disabled.value)
+    return
+  displayed.value.plugins.maintenance_intervals_seconds[selectedMaintenance.value] = 5
+  selectedMaintenance.value = undefined
+}
+function removeMaintenance(id: string) {
+  if (displayed.value && !disabled.value)
+    delete displayed.value.plugins.maintenance_intervals_seconds[id]
+}
 const pluginOptions = computed(() => plugins.value.filter(p => !displayed.value?.plugins.http_filters[p.id]).map(p => ({ label: p.name, value: p.id })))
 const methods = [
   'GET',
@@ -271,6 +283,30 @@ defineExpose({ hasChanges })
         </div>
         <p class="mt-3 text-z-sm text-z-text-secondary">
           {{ t('forkSettings.sdkNotice') }}
+        </p>
+      </section>
+      <section>
+        <h2 class="text-z-base font-semibold">
+          {{ t('forkSettings.maintenance') }}
+          <ZTag type="warning" class="ml-2">
+            {{ t('forkSettings.restartApply') }}
+          </ZTag>
+        </h2>
+        <div class="mt-4 flex max-w-xl flex-wrap items-center gap-2">
+          <ZSelect v-model="selectedMaintenance" class="min-w-48 flex-1" :options="maintenanceOptions" :disabled="disabled" :aria-label="t('forkSettings.selectPlugin')" :placeholder="t('forkSettings.selectPlugin')" />
+          <ZButton :disabled="disabled || !selectedMaintenance" @click="addMaintenance">
+            <Plus class="size-4" />
+            {{ t('forkSettings.addMaintenance') }}
+          </ZButton>
+        </div>
+        <div v-for="(_, id) in displayed.plugins.maintenance_intervals_seconds" :key="id" class="mt-3 flex max-w-xl items-center gap-2">
+          <ForkNumber v-model="displayed.plugins.maintenance_intervals_seconds[id]!" class="min-w-0 flex-1" :label="plugins.find(p => p.id === id)?.name ?? String(id)" :min="5" :max="3600" :unit="t('forkSettings.seconds')" :disabled="disabled" />
+          <ZIconButton :disabled="disabled" :aria-label="t('forkSettings.removeMaintenance')" @click="removeMaintenance(String(id))">
+            <Trash2 class="size-4" />
+          </ZIconButton>
+        </div>
+        <p class="mt-3 text-z-sm text-z-text-secondary">
+          {{ t('forkSettings.maintenanceNotice') }}
         </p>
       </section>
       <section>

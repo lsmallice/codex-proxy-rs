@@ -11,6 +11,7 @@ export interface ForkSettingsValues {
     ws_response_recovery: { enabled: boolean, full_history: boolean, encrypted_history: boolean, encrypted_history_max_sessions: number, encrypted_history_max_digests_per_session: number, max_retries: number, window_ms: number, max_prefix_bytes: number, close_codes: number[], disconnects: boolean }
   }
   plugins: {
+    maintenance_intervals_seconds: Record<string, number>
     rpc: { maximum_calls: number, maximum_executing_calls: number, maximum_queued_calls: number, maximum_callbacks: number, queue_timeout_ms: number }
     http_filters: Record<string, ForkHttpRoute[]>
   }

@@ -30,7 +30,7 @@ const { t } = useI18n({ useScope: 'global' })
     <ZIconButton size="small" :aria-label="t('proxies.actions.edit')" :disabled="testing || updating" @click="emit('edit', proxy)">
       <Pencil class="size-3.5 text-z-link" />
     </ZIconButton>
-    <ZPopover placement="bottom-end">
+    <ZPopover v-if="!proxy.managedIpv6" placement="bottom-end">
       <template #reference="{ open }">
         <ZIconButton size="small" :aria-label="t('proxies.actions.moreActionsFor', { name: proxy.name })" :pressed="open" :disabled="testing || updating" :loading="updating">
           <MoreHorizontal class="size-4" />

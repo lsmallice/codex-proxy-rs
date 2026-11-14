@@ -534,6 +534,7 @@ fn preview_fixture() -> Fixture {
 fn source_proxy() -> ProxyRecord {
     let now = chrono::Utc::now();
     ProxyRecord {
+        managed_ipv6: None,
         enabled: true,
         auto_location: false,
         detected_location: None,

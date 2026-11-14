@@ -4,6 +4,7 @@ mod client_distribution;
 mod command_line;
 mod config;
 mod fork_settings;
+mod ipv6_controller;
 mod logging;
 mod official_plugins;
 mod outbound;

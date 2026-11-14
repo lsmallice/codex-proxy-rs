@@ -659,6 +659,7 @@ fn compatibility_runtime(
         store.clone(),
         store,
         gateway_plugin_runtime::PluginRuntimeConfig {
+            maintenance_intervals_seconds: Default::default(),
             cache_directory: cache.path().to_owned(),
             host_version: host.parse().unwrap(),
             package_limits: Default::default(),

@@ -73,6 +73,7 @@ async fn initialize_inner(
         snapshot,
         account_probe: probe,
         proxy_probe,
+        ipv6_controller,
         client_distribution,
         system,
         client_key_verifier,
@@ -135,6 +136,19 @@ async fn initialize_inner(
         system.clone(),
         timezone,
     ));
+    let ipv6_enabled = ipv6_controller.is_some();
+    if ipv6_enabled && store.ipv6().is_none() {
+        return Err(AdminError::invalid("IPv6 已配置但缺少持久化端口"));
+    }
+    let proxies_service = Arc::new(use_case::proxies::DefaultProxiesService::new(
+        store.proxies(),
+        proxy_probe,
+        snapshot.clone(),
+        providers.clone(),
+        upstream_info.clone(),
+        store.ipv6(),
+        ipv6_controller,
+    ));
     let credentials = Arc::new(CredentialsService::new(
         providers.clone(),
         store.accounts(),
@@ -188,13 +202,7 @@ async fn initialize_inner(
             store.plugin_state(),
         )),
         key_usage,
-        proxies: Arc::new(use_case::proxies::DefaultProxiesService::new(
-            store.proxies(),
-            proxy_probe,
-            snapshot.clone(),
-            providers.clone(),
-            upstream_info.clone(),
-        )),
+        proxies: proxies_service.clone(),
         auth,
         accounts: accounts.clone(),
         account_groups: Arc::new(DefaultAccountGroupService::new(
@@ -233,7 +241,7 @@ async fn initialize_inner(
             runtime: store.account_runtime(),
             settings: store.settings(),
         });
-    let worker_contributions = vec![
+    let mut worker_contributions = vec![
         backup_task.into_worker()?,
         import_task.into_worker()?,
         freeze_recovery.into_worker()?,
@@ -244,6 +252,9 @@ async fn initialize_inner(
         }
         .into_worker()?,
     ];
+    if ipv6_enabled {
+        worker_contributions.push(use_case::ipv6::Ipv6Task(proxies_service).into_worker()?);
+    }
     Ok(AdminBundle {
         services,
         worker_contributions,

@@ -68,6 +68,7 @@ async fn setup_with_limits(
         store.clone(),
         store.clone(),
         PluginRuntimeConfig {
+            maintenance_intervals_seconds: Default::default(),
             cache_directory: directory.path().join("cache"),
             host_version: "1.0.0".parse().unwrap(),
             package_limits: PackageLimits::default(),

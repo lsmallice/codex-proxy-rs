@@ -31,6 +31,7 @@ const REQUEST_DUMP_SECRET: &str = "unredacted-authorization-value";
 #[test]
 fn logging_requires_at_least_one_sink() {
     let mut config = HostConfig {
+        ipv6_egress: None,
         timezone: Default::default(),
         listen: ListenConfig {
             host: "127.0.0.1".to_owned(),
@@ -356,6 +357,7 @@ fn with_logging(config: HostConfig, write: impl FnOnce()) {
 
 fn logging_config(directory: PathBuf, request_dump: bool) -> HostConfig {
     HostConfig {
+        ipv6_egress: None,
         timezone: env::var(LOG_TIMEZONE_ENV)
             .ok()
             .map(|value| value.parse().unwrap())

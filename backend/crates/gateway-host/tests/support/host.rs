@@ -39,6 +39,7 @@ pub fn child_command(name: &str) -> Command {
 
 pub fn configuration(directory: &Path) -> HostConfig {
     HostConfig {
+        ipv6_egress: None,
         timezone: Default::default(),
         listen: ListenConfig {
             host: "127.0.0.1".to_owned(),

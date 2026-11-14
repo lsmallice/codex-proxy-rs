@@ -370,6 +370,7 @@ pub struct AdminRuntimePorts {
     pub snapshot: Arc<dyn SnapshotControl>,
     pub account_probe: Arc<dyn AccountProbe>,
     pub proxy_probe: Arc<dyn ports::proxy::ProxyProbe>,
+    pub ipv6_controller: Option<Arc<dyn ports::ipv6::Ipv6Controller>>,
     pub client_distribution: Arc<dyn ClientDistributionResolver>,
     pub system: Arc<dyn SystemOperations>,
     pub client_key_verifier: Arc<dyn ClientKeyVerifier>,

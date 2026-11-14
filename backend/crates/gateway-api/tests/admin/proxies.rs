@@ -22,6 +22,41 @@ use tower::ServiceExt as _;
 use super::{AdminTestFixture, AdminTestState};
 
 #[tokio::test]
+async fn ipv6_management_requires_admin_and_unconfigured_status_is_not_an_auth_failure() {
+    let fixture = AdminTestFixture::new().await;
+    for (path, body) in [
+        ("/api/admin/proxies/ipv6/status", None),
+        ("/api/admin/proxies/ipv6/leases", None),
+        ("/api/admin/proxies/ipv6/policy", None),
+        (
+            "/api/admin/proxies/ipv6/allocate",
+            Some(json!({"requestId":"a66c17dc-d5df-4a17-bca5-a0e3c3391f06","name":"test"})),
+        ),
+        (
+            "/api/admin/proxies/ipv6/retire",
+            Some(json!({"requestId":"test"})),
+        ),
+    ] {
+        assert_eq!(
+            request(&fixture, path, body, false).await.0,
+            StatusCode::UNAUTHORIZED
+        );
+    }
+    fixture.auth.insert_session("valid-session");
+    let (status, body) = request(&fixture, "/api/admin/proxies/ipv6/status", None, true).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["data"]["configured"], false);
+    let (status, _) = request(
+        &fixture,
+        "/api/admin/proxies/ipv6/policy",
+        Some(json!({"enabled":true,"revision":0})),
+        true,
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
 async fn proxy_location_round_trips_preserves_omitted_and_clears_null() {
     let fixture = AdminTestFixture::new().await;
     fixture.auth.insert_session("valid-session");
@@ -225,6 +260,7 @@ impl ProxyStore for MemoryProxies {
             ));
         }
         let mut record = ProxyRecord {
+            managed_ipv6: None,
             enabled: true,
             auto_location: command.auto_location,
             detected_location: None,

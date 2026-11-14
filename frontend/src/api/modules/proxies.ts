@@ -22,6 +22,7 @@ export interface OutboundProxyTest {
 }
 
 export interface OutboundProxyRecord {
+  managedIpv6: ManagedIpv6Lease | null
   maxWebsocketConnections: number
   enabled: boolean
   autoLocation: boolean
@@ -40,6 +41,31 @@ export interface OutboundProxyRecord {
   createdAtDisplay: string
   updatedAt: string
   updatedAtDisplay: string
+}
+
+export interface ManagedIpv6Lease {
+  requestId: string
+  controllerId: string
+  name: string
+  state: 'queued' | 'allocating' | 'unknown' | 'pending' | 'active' | 'retiring' | 'retired'
+  address: string | null
+  proxyId: string | null
+  ownerAccountId: string | null
+}
+
+export interface ManagedIpv6Status {
+  configured: boolean
+  available: boolean
+  controllerId: string | null
+  prefix: string | null
+  issued: string | null
+  message: string | null
+}
+
+export interface ManagedIpv6Policy {
+  enabled: boolean
+  controllerId: string | null
+  revision: number
 }
 
 interface ProxyPage {
@@ -194,5 +220,47 @@ export function probeProxy(data: ProxyProbeParam, options: RequestOptions = {}) 
     data,
     timeout: 25000,
     ...options,
+  })
+}
+
+export function getManagedIpv6Status(options: RequestOptions = {}) {
+  return request<ManagedIpv6Status>({ url: '/api/admin/proxies/ipv6/status', method: 'GET', ...options })
+}
+
+export function getManagedIpv6Leases(options: RequestOptions = {}) {
+  return request<ManagedIpv6Lease[]>({ url: '/api/admin/proxies/ipv6/leases', method: 'GET', ...options })
+}
+
+export function allocateManagedIpv6(data: { requestId: string, name: string, accountId?: string | null }) {
+  return request<ManagedIpv6Lease>({
+    url: '/api/admin/proxies/ipv6/allocate',
+    method: 'POST',
+    data,
+    timeout: 30000,
+  })
+}
+
+export function getManagedIpv6Policy(options: RequestOptions = {}) {
+  return request<ManagedIpv6Policy>({
+    url: '/api/admin/proxies/ipv6/policy',
+    method: 'GET',
+    ...options,
+  })
+}
+
+export function setManagedIpv6Policy(data: { enabled: boolean, revision: number }) {
+  return request<ManagedIpv6Policy>({
+    url: '/api/admin/proxies/ipv6/policy',
+    method: 'POST',
+    data,
+  })
+}
+
+export function retireManagedIpv6(data: { requestId: string }) {
+  return request<ManagedIpv6Lease>({
+    url: '/api/admin/proxies/ipv6/retire',
+    method: 'POST',
+    data,
+    timeout: 30000,
   })
 }

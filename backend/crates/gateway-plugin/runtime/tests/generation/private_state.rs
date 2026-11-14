@@ -297,6 +297,7 @@ async fn observation_callbacks_use_typed_state_crud_and_reject_undeclared_namesp
         store,
         state.clone(),
         PluginRuntimeConfig {
+            maintenance_intervals_seconds: Default::default(),
             cache_directory: cache.path().join("packages"),
             host_version: "1.0.0".parse().unwrap(),
             package_limits: PackageLimits::default(),

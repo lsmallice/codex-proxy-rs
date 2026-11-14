@@ -25,7 +25,10 @@ export function useProxyAccountAssignment(options: {
   })
   const selectableAccounts = computed(() => query.items.value.filter(account => account.outboundProxyId !== options.proxy()?.id))
   const selection = usePageSelection(selectableAccounts)
-  const tooManySelected = computed(() => selection.selectedIds.value.size > MAX_ASSIGNMENT_ACCOUNTS)
+  const maximumAccounts = computed(() => options.proxy()?.managedIpv6
+    ? 1
+    : MAX_ASSIGNMENT_ACCOUNTS)
+  const tooManySelected = computed(() => selection.selectedIds.value.size > maximumAccounts.value)
   const pagination = computed(() => ({
     currentPage: query.page.value,
     pageSize: query.pageSize.value,
@@ -91,7 +94,7 @@ export function useProxyAccountAssignment(options: {
     setPageSize,
     ...selection,
     tooManySelected,
-    maximumAccounts: MAX_ASSIGNMENT_ACCOUNTS,
+    maximumAccounts,
     assigning: action.loading,
     assign,
   }

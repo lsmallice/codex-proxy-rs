@@ -21,6 +21,34 @@ fn capacity_defaults_and_bounded_overrides() {
 }
 
 #[test]
+fn maintenance_overrides_accept_five_seconds_and_preserve_other_instances() {
+    let defaults: PluginStartupConfig = serde_json::from_value(json!({})).unwrap();
+    assert!(defaults.maintenance_intervals_seconds.is_empty());
+    let id = "a0f1ee31-0005-8e2a-bfd9-30e7de51c321";
+    for (seconds, valid) in [
+        (0, false),
+        (4, false),
+        (5, true),
+        (30, true),
+        (3600, true),
+        (3601, false),
+    ] {
+        let settings: PluginStartupConfig = serde_json::from_value(json!({
+            "maintenance_intervals_seconds": {id: seconds}
+        }))
+        .unwrap();
+        assert_eq!(settings.validate().is_ok(), valid);
+        assert_eq!(
+            settings.rpc_limits().maximum_queue_timeout,
+            defaults.rpc_limits().maximum_queue_timeout
+        );
+    }
+    let invalid: PluginStartupConfig =
+        serde_json::from_value(json!({"maintenance_intervals_seconds":{"not-an-id":5}})).unwrap();
+    assert!(invalid.validate().is_err());
+}
+
+#[test]
 fn http_filters_require_explicit_methods_and_paths() {
     for (method, path, valid) in [
         ("POST", "/v1/responses", true),

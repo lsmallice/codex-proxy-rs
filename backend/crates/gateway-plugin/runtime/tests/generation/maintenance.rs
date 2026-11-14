@@ -22,6 +22,78 @@ use gateway_plugin_sdk::{Capability, Contributions, Stage};
 use serde_json::{Value, json};
 use std::{path::Path, sync::Arc, time::Duration};
 
+#[tokio::test]
+async fn five_second_maintenance_is_per_instance_and_waits_for_the_previous_call() {
+    let (cache, store, runtime) = super::setup_with_maintenance_intervals(
+        Contributions::from([crate::support::contribution(
+            Capability::Maintenance,
+            vec![Stage::Maintenance],
+            vec![],
+            vec![],
+        )]),
+        Default::default(),
+        Default::default(),
+        std::collections::BTreeMap::from([("instance-one".to_owned(), 5)]),
+    )
+    .await;
+    let runtime = Arc::new(runtime);
+    let markers = tempfile::tempdir().unwrap();
+    let mut instances = store.snapshot.lock().unwrap().clone();
+    let mut other = instances.instances[0].clone();
+    other.id = "instance-default".into();
+    instances.instances.push(other);
+    for instance in &mut instances.instances {
+        instance.configuration = json!({
+            "maintenance_marker":markers.path().join(&instance.id),
+            "maintenance_wait_marker":markers.path().join("release"),
+            "call_budgets_ms":{"maintenance":120_000}
+        });
+    }
+    let snapshots = RuntimeSnapshotHandle::default();
+    publish(&runtime, &snapshots, instances).await;
+    let WorkerContribution::Registration(registration) =
+        runtime.maintenance_worker(snapshots.clone()).unwrap()
+    else {
+        panic!("registration")
+    };
+    let WorkerRunnable::Daemon { task, .. } = registration.runnable else {
+        panic!("daemon")
+    };
+    let stop = CancellationToken::new();
+    let running = tokio::spawn({
+        let stop = stop.clone();
+        async move { task.run(WorkerDaemonContext::new(stop)).await.unwrap() }
+    });
+    let fast = markers.path().join("instance-one");
+    let normal = markers.path().join("instance-default");
+    wait_records(&fast, 1).await;
+    wait_records(&normal, 1).await;
+    tokio::time::sleep(Duration::from_millis(5100)).await;
+    assert_eq!(records(&fast).len(), 1, "slow maintenance must not overlap");
+    std::fs::write(markers.path().join("release"), []).unwrap();
+    wait_records(&fast, 2).await;
+    wait_records(&normal, 2).await;
+    tokio::time::sleep(Duration::from_secs(4)).await;
+    assert_eq!(
+        records(&fast).len(),
+        2,
+        "the interval starts after completion"
+    );
+    tokio::time::timeout(Duration::from_secs(3), wait_records(&fast, 4))
+        .await
+        .unwrap();
+    assert_eq!(
+        records(&normal).len(),
+        2,
+        "other instances keep the 30 second default"
+    );
+    stop.cancel();
+    running.await.unwrap();
+    snapshots.suspend();
+    runtime.shutdown().await;
+    super::wait_until_empty(cache.path()).await;
+}
+
 fn group(name: &str) -> CreateAccountGroup {
     CreateAccountGroup {
         allow_image_generation: true,

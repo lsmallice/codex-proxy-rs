@@ -83,6 +83,8 @@ pub struct HostConfig {
     pub system_update: SystemUpdateConfig,
     #[serde(default = "default_worker_shutdown_timeout_seconds")]
     pub worker_shutdown_timeout_seconds: u64,
+    #[serde(default)]
+    pub ipv6_egress: Option<Ipv6EgressConfig>,
 }
 
 impl HostConfig {
@@ -123,6 +125,9 @@ impl HostConfig {
             &self.runtime_data_dir,
             asset_directory,
         )?;
+        if let Some(config) = &self.ipv6_egress {
+            config.validate()?;
+        }
         Ok(())
     }
 
@@ -134,6 +139,61 @@ impl HostConfig {
     #[must_use]
     pub const fn worker_shutdown_timeout(&self) -> Duration {
         Duration::from_secs(self.worker_shutdown_timeout_seconds)
+    }
+}
+
+/// CPR 复用的宿主 IPv6 出口控制服务配置
+#[derive(Clone, Deserialize, PartialEq, Eq)]
+pub struct Ipv6EgressConfig {
+    pub id: String,
+    pub control_url: String,
+    pub token: String,
+    pub prefix: String,
+}
+
+impl std::fmt::Debug for Ipv6EgressConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Ipv6EgressConfig")
+            .field("id", &self.id)
+            .field("prefix", &self.prefix)
+            .finish_non_exhaustive()
+    }
+}
+
+impl Ipv6EgressConfig {
+    fn validate(&self) -> Result<(), ConfigError> {
+        if self.id.is_empty()
+            || self.id.len() > 64
+            || !self
+                .id
+                .bytes()
+                .all(|c| c.is_ascii_alphanumeric() || b"-_".contains(&c))
+        {
+            return Err(ConfigError::InvalidField("host.ipv6_egress.id"));
+        }
+        let url = reqwest::Url::parse(self.control_url.trim())
+            .map_err(|_| ConfigError::InvalidField("host.ipv6_egress.control_url"))?;
+        if !matches!(url.scheme(), "http" | "https")
+            || url.host_str().is_none()
+            || url.query().is_some()
+            || url.fragment().is_some()
+            || !url.username().is_empty()
+            || url.password().is_some()
+            || url.path() != "/"
+        {
+            return Err(ConfigError::InvalidField("host.ipv6_egress.control_url"));
+        }
+        if self.token.trim().is_empty() || self.token.chars().any(char::is_control) {
+            return Err(ConfigError::InvalidField("host.ipv6_egress.token"));
+        }
+        let network = self
+            .prefix
+            .parse::<ipnet::Ipv6Net>()
+            .map_err(|_| ConfigError::InvalidField("host.ipv6_egress.prefix"))?;
+        if network.prefix_len() > 120 || network.addr() != network.network() {
+            return Err(ConfigError::InvalidField("host.ipv6_egress.prefix"));
+        }
+        Ok(())
     }
 }
 

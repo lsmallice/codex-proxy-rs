@@ -50,7 +50,9 @@ const options = computed(() => [
     description: proxy.name.trim()
       ? proxy.endpoint
       : undefined,
-    disabled: !proxy.enabled,
+    disabled: !proxy.enabled || (!!proxy.managedIpv6
+      && (proxy.managedIpv6.state !== 'active'
+        || (!!proxy.managedIpv6.ownerAccountId && proxy.managedIpv6.ownerAccountId !== props.accountId))),
   })),
 ])
 const selection = computed({

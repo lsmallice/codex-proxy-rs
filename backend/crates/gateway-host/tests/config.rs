@@ -6,6 +6,37 @@ use gateway_host::config::{FileLoggingConfig, HostConfig, ListenConfig, LoggingC
 use gateway_host::system_update::SystemUpdateConfig;
 
 #[test]
+fn ipv6_prefix_is_configurable_and_requires_an_aligned_network() {
+    for (prefix, valid) in [
+        ("2001:db8:1234:1::/64", true),
+        ("2001:db8:abcd:ef00::/80", true),
+        ("2001:db8::1/80", false),
+        ("192.0.2.0/24", false),
+        ("not-a-network", false),
+        ("2001:db8::/128", false),
+    ] {
+        let mut config = valid_config();
+        config.ipv6_egress = Some(gateway_host::Ipv6EgressConfig {
+            id: "test-pool".to_owned(),
+            control_url: "http://127.0.0.1:11881".to_owned(),
+            token: "test-only-controller-secret".to_owned(),
+            prefix: prefix.to_owned(),
+        });
+        assert_eq!(
+            config
+                .resolve_and_validate(
+                    std::path::Path::new("/srv/gateway"),
+                    std::path::Path::new("/srv/web")
+                )
+                .is_ok(),
+            valid,
+            "{prefix}"
+        );
+        assert!(!format!("{config:?}").contains("test-only-controller-secret"));
+    }
+}
+
+#[test]
 fn host_config_should_default_update_assets_to_the_resolved_api_directory() {
     let mut config = valid_config();
     config.system_update.web_dist_dir = None;
@@ -201,6 +232,7 @@ fn valid_config() -> HostConfig {
         ..SystemUpdateConfig::default()
     };
     HostConfig {
+        ipv6_egress: None,
         timezone: Default::default(),
         listen: ListenConfig {
             host: "127.0.0.1".to_owned(),

@@ -963,7 +963,18 @@ pub(crate) async fn update_provider_accounts_scheduling_in_transaction(
     .bind(concurrency_limit.is_some())
     .fetch_all(&mut **transaction)
     .await
-    .map_err(|source| postgres_unavailable("set provider accounts state in admin transaction", source))?
+    .map_err(|source| {
+        if source.as_database_error().is_some_and(sqlx::error::DatabaseError::is_unique_violation) {
+            StoreError::Conflict {
+                source: Some(source.into()),
+                entity: ENTITY,
+                id: "outbound proxy binding".to_owned(),
+                kind: ConflictKind::InvalidTransition,
+            }
+        } else {
+            postgres_unavailable("set provider accounts state in admin transaction", source)
+        }
+    })?
     .into_iter()
     .collect::<BTreeSet<_>>();
     let expected = account_ids.iter().cloned().collect::<BTreeSet<_>>();

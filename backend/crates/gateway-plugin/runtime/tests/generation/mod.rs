@@ -63,6 +63,16 @@ async fn setup_with_limits(
     restart_circuit: PluginRestartCircuitConfig,
     rpc_limits: RpcLimits,
 ) -> (tempfile::TempDir, Arc<Store>, PluginRuntime) {
+    setup_with_maintenance_intervals(contributes, restart_circuit, rpc_limits, Default::default())
+        .await
+}
+
+async fn setup_with_maintenance_intervals(
+    contributes: Contributions,
+    restart_circuit: PluginRestartCircuitConfig,
+    rpc_limits: RpcLimits,
+    maintenance_intervals_seconds: BTreeMap<String, u64>,
+) -> (tempfile::TempDir, Arc<Store>, PluginRuntime) {
     let cache = tempfile::tempdir().unwrap();
     let artifact = PackageInspector::new(PackageLimits::default(), "1.0.0".parse().unwrap())
         .inspect(
@@ -94,6 +104,7 @@ async fn setup_with_limits(
         store.clone(),
         store.clone(),
         PluginRuntimeConfig {
+            maintenance_intervals_seconds,
             cache_directory: cache.path().to_owned(),
             host_version: "1.0.0".parse().unwrap(),
             package_limits: PackageLimits::default(),

@@ -2,13 +2,14 @@
 import type { OutboundProxyRecord } from '@/api'
 
 import { ZButton, ZCard, ZCheckbox, ZConfirmDialog, ZInput, ZPageHeader, ZPagination, ZTable, ZTag } from '@codex-proxy/ui'
-import { LockKeyhole, Plus, Search, Users, Wifi } from '@lucide/vue'
+import { LockKeyhole, Network, Plus, Search, Users, Wifi } from '@lucide/vue'
 import { shallowRef, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { usePageSelection } from '@/composables/usePageSelection'
 import ProxyAccountsModal from './components/ProxyAccountsModal.vue'
 import ProxyActions from './components/ProxyActions.vue'
 import ProxyFormModal from './components/ProxyFormModal.vue'
+import ProxyIpv6Modal from './components/ProxyIpv6Modal.vue'
 import ProxyRegion from './components/ProxyRegion.vue'
 import { useProxies } from './composables/useProxies'
 import { useProxyBatchTesting } from './composables/useProxyBatchTesting'
@@ -55,6 +56,7 @@ const {
 const showAccounts = shallowRef(false)
 const inspected = shallowRef<OutboundProxyRecord | null>(null)
 const { selectedIds, selectedRowKeys, allSelected, indeterminate, toggleSelection, toggleAll } = usePageSelection(proxies)
+const showIpv6 = shallowRef(false)
 const { busy: batchTesting, start: testSelectedProxies } = useProxyBatchTesting({
   test: testSavedProxies,
   reload: () => loadProxies({ silent: true }),
@@ -90,6 +92,10 @@ watch(search, () => {
               </template>
               {{ t('proxies.editor.createTitle') }}
             </ZButton>
+            <ZButton variant="plain" :aria-label="t('proxies.ipv6.open')" @click="showIpv6 = true">
+              <Network class="size-4" />
+              {{ t('proxies.ipv6.open') }}
+            </ZButton>
           </div>
         </div>
       </template>
@@ -104,6 +110,9 @@ watch(search, () => {
             </template>
             <template #name="{ row }">
               <span class="block truncate text-z text-z-text" :title="row.name">{{ row.name }}</span>
+              <ZTag v-if="row.managedIpv6" size="small">
+                {{ t('proxies.ipv6.title') }}
+              </ZTag>
             </template>
             <template #address="{ row }">
               <span class="flex min-w-0 items-center gap-1 text-z-xs font-emphasis text-z-text-quaternary">
@@ -117,7 +126,8 @@ watch(search, () => {
               </ZTag>
             </template>
             <template #exitIp="{ row }">
-              <div v-if="row.lastTest?.exitIpv4 && row.lastTest?.exitIpv6" class="flex flex-col gap-0.5 font-mono text-z-xs">
+              <span v-if="row.managedIpv6" class="block truncate font-mono text-z-xs" :title="row.managedIpv6.address ?? undefined">{{ row.managedIpv6.address }}</span>
+              <div v-else-if="row.lastTest?.exitIpv4 && row.lastTest?.exitIpv6" class="flex flex-col gap-0.5 font-mono text-z-xs">
                 <span class="truncate" :title="`IPv4: ${row.lastTest.exitIpv4}`">
                   {{ row.lastTest.exitIpv4 }}
                 </span>
@@ -198,6 +208,7 @@ watch(search, () => {
         {{ t('proxies.page.deleteDescription') }}
       </p>
     </ZConfirmDialog>
+    <ProxyIpv6Modal v-model="showIpv6" @changed="loadProxies({ silent: true })" />
     <ProxyAccountsModal v-model="showAccounts" :proxy="inspected" @changed="loadProxies({ silent: true })" />
   </div>
 </template>

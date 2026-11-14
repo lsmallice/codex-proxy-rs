@@ -30,7 +30,7 @@ struct InstanceTask {
 }
 
 impl InstanceTask {
-    fn start(instance: Arc<PreparedInstance>) -> Self {
+    fn start(instance: Arc<PreparedInstance>, interval: Duration) -> Self {
         let dirty = Arc::new(Notify::new());
         dirty.notify_one();
         let cancellation = CancellationToken::new();
@@ -38,6 +38,7 @@ impl InstanceTask {
             Arc::clone(&instance.session),
             Arc::clone(&dirty),
             cancellation.clone(),
+            interval,
         ));
         Self {
             instance,
@@ -138,9 +139,17 @@ impl DaemonTask for MaintenanceTask {
                         task.dirty.notify_one();
                     }
                     for (id, instance) in desired {
+                        let interval = self
+                            .runtime
+                            .config
+                            .maintenance_intervals_seconds
+                            .get(&id)
+                            .copied()
+                            .map(Duration::from_secs)
+                            .unwrap_or(RECONCILE_INTERVAL);
                         tasks
                             .entry(id)
-                            .or_insert_with(|| InstanceTask::start(instance));
+                            .or_insert_with(|| InstanceTask::start(instance, interval));
                     }
                 }
                 if same_set && revision != snapshot.as_ref().map(|s| s.revision()) {
@@ -190,13 +199,18 @@ async fn stop_all(tasks: BTreeMap<String, InstanceTask>) {
     futures::future::join_all(tasks.into_values().map(InstanceTask::stop)).await;
 }
 
-async fn reconcile(session: Arc<RpcSession>, dirty: Arc<Notify>, cancellation: CancellationToken) {
+async fn reconcile(
+    session: Arc<RpcSession>,
+    dirty: Arc<Notify>,
+    cancellation: CancellationToken,
+    interval: Duration,
+) {
     loop {
         tokio::select! {
             biased;
             () = cancellation.cancelled() => return,
             () = dirty.notified() => {},
-            () = tokio::time::sleep(RECONCILE_INTERVAL) => {},
+            () = tokio::time::sleep(interval) => {},
         }
         let context = session.context(Stage::Maintenance, session.budget(Stage::Maintenance));
         let instance_id = context.instance_id.clone();

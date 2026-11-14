@@ -129,6 +129,7 @@ async fn setup_instances(
         store.clone(),
         store.clone(),
         PluginRuntimeConfig {
+            maintenance_intervals_seconds: Default::default(),
             cache_directory: cache.path().to_owned(),
             host_version: "1.0.0".parse().unwrap(),
             package_limits: PackageLimits::default(),

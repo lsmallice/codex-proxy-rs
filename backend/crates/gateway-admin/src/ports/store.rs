@@ -625,6 +625,7 @@ pub struct AdminStorePorts {
     plugin_state: Arc<dyn super::plugins::PluginStateStore>,
     plugin_resources: Arc<dyn super::plugin_resources::PluginResourceStore>,
     usage_data: Arc<dyn super::usage_data::UsageDataStore>,
+    ipv6: Option<Arc<dyn super::ipv6::Ipv6ProxyStore>>,
 }
 
 impl AdminStorePorts {
@@ -676,7 +677,19 @@ impl AdminStorePorts {
             plugin_state,
             plugin_resources,
             usage_data,
+            ipv6: None,
         }
+    }
+
+    #[must_use]
+    pub fn with_ipv6(mut self, store: Arc<dyn super::ipv6::Ipv6ProxyStore>) -> Self {
+        self.ipv6 = Some(store);
+        self
+    }
+
+    #[must_use]
+    pub fn ipv6(&self) -> Option<Arc<dyn super::ipv6::Ipv6ProxyStore>> {
+        self.ipv6.clone()
     }
 
     #[must_use]

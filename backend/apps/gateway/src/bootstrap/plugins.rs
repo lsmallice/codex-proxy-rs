@@ -101,6 +101,7 @@ pub(super) fn prepare_plugins(
                     .map_err(|_| ConfigError::InvalidField("host.version"))?,
                 package_limits: gateway_plugin_runtime::PackageLimits::default(),
                 rpc_limits: settings.rpc_limits(),
+                maintenance_intervals_seconds: settings.maintenance_intervals_seconds,
                 restart_circuit: Default::default(),
                 http_filters: settings.http_filters,
             },

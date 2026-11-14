@@ -154,6 +154,7 @@ async fn real_worker_logs_are_correlated_sanitized_validated_and_bounded() {
         store.clone(),
         store,
         PluginRuntimeConfig {
+            maintenance_intervals_seconds: Default::default(),
             cache_directory: directory.path().join("cache"),
             host_version: "1.0.0".parse().unwrap(),
             package_limits: PackageLimits::default(),

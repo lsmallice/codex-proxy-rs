@@ -28,6 +28,7 @@ mod control_plane;
 mod execution;
 mod execution_buffer;
 mod health;
+mod ipv6;
 mod observability;
 mod ops_events;
 mod plugins;

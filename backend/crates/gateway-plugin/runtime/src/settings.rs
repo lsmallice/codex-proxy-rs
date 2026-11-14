@@ -7,6 +7,7 @@ use std::{collections::BTreeMap, time::Duration};
 #[serde(default)]
 pub struct PluginStartupConfig {
     pub rpc: PluginRpcSettings,
+    pub maintenance_intervals_seconds: BTreeMap<String, u64>,
     pub http_filters: BTreeMap<String, Vec<PluginHttpRoute>>,
 }
 
@@ -45,6 +46,16 @@ impl PluginHttpRoute {
 impl PluginStartupConfig {
     pub fn validate(&self) -> Result<(), &'static str> {
         let rpc = &self.rpc;
+        if self.maintenance_intervals_seconds.len() > 64
+            || self
+                .maintenance_intervals_seconds
+                .iter()
+                .any(|(id, seconds)| {
+                    uuid::Uuid::parse_str(id).is_err() || !(5..=3600).contains(seconds)
+                })
+        {
+            return Err("plugins.maintenance_intervals_seconds");
+        }
         if !(1..=1024).contains(&rpc.maximum_calls)
             || !(1..=rpc.maximum_calls).contains(&rpc.maximum_executing_calls)
             || rpc.maximum_queued_calls > rpc.maximum_calls

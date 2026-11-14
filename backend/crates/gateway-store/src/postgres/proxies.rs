@@ -30,6 +30,9 @@ use crate::{
 
 const ENTITY: &str = "outbound proxy";
 const SELECT: &str = "select p.*,
+    (select jsonb_build_object('requestId', l.request_id, 'controllerId', l.controller_id, 'name', l.name,
+        'state', l.state, 'address', l.address, 'proxyId', l.proxy_id, 'ownerAccountId', l.owner_account_id)
+        from managed_ipv6_leases l where l.proxy_id = p.id) as managed_ipv6,
     (select count(*) from provider_accounts a where a.outbound_proxy_id = p.id) as account_count
     from outbound_proxies p";
 
@@ -113,6 +116,12 @@ fn record(row: PgRow) -> StoreResult<ProxyRecord> {
         .try_get("last_test_latency_ms")
         .map_err(|source| invalid().with_source(source))?;
     Ok(ProxyRecord {
+        managed_ipv6: row
+            .try_get::<Option<sqlx::types::Json<gateway_admin::model::ipv6::Ipv6LeaseView>>, _>(
+                "managed_ipv6",
+            )
+            .map_err(|source| invalid().with_source(source))?
+            .map(|v| v.0),
         enabled: row
             .try_get("enabled")
             .map_err(|source| invalid().with_source(source))?,

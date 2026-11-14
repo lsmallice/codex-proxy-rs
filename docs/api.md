@@ -1397,6 +1397,24 @@ API 的 `autoLocation` 默认为 `false`；开启时使用已检测位置，测�
 避免已轮换的凭据因代理状态变化而丢失。完成导入或请求取消后自动释放保护。
 OAuth 等待回调期间不持有保护；提交仍拒绝已删除或连接配置改变的代理
 
+独占 IPv6 管理入口同样要求管理员身份：
+
+| 方法 | 路径 | 请求或结果 |
+| --- | --- | --- |
+| GET | `/api/admin/proxies/ipv6/status` | 控制服务配置、可用状态、实际地址段和累计发放计数 |
+| GET | `/api/admin/proxies/ipv6/policy` | `{ enabled, controllerId, revision }` |
+| POST | `/api/admin/proxies/ipv6/policy` | `{ enabled, revision }`，版本不一致返回 409 |
+| GET | `/api/admin/proxies/ipv6/leases` | 最近最多 200 条记录，未退役优先，不返回代理认证 |
+| POST | `/api/admin/proxies/ipv6/allocate` | `{ requestId, name, accountId? }`，requestId 为调用方生成的 UUID |
+| POST | `/api/admin/proxies/ipv6/retire` | `{ requestId }`，已绑定账号的租约返回 409 |
+
+分配请求 ID 为幂等键，重试须复用同一 ID 和参数，不能因超时更换 ID
+记录状态为 `queued / allocating / unknown / pending / active / retiring / retired`
+结果未确认时由后台接续，不能据此判断导入失败并重放凭据交换
+账号新增的自动分配任务与账号记录同事务提交，完成前停用，显式代理与已有账号不接管
+普通代理记录的 `managedIpv6` 为可空归属信息，非空时不允许修改出口或切换启停
+独占账号解除绑定后地址进入退役，不可绑定第二个账号
+
 ### 账号连接测试 SSE
 
 `GET /api/admin/accounts/connection-test` 固定探测请求指定的账号，不参与普通账号轮换。成功流沿用
@@ -2040,6 +2058,10 @@ HTTP 返回 `429`，`error.code` 为 `key_daily_budget_exceeded` 或 `key_weekly
 | [主动额度重置卡](#主动额度重置卡) | `resetCreditLeadMinutes`、`resetCreditMaxWeeklyRemainingPercent` |
 
 ### 二开配置
+
+插件维护周期通过 `plugins.maintenance_intervals_seconds` 保存为实例 UUID 到秒数的映射，
+最多 64 项，每项范围 5–3600，省略的实例使用 30 秒。删除映射恢复默认值，修改需重启，
+保存响应的 `active` 仍保留启动值；该设置不改变 RPC 排队或执行超时
 
 `GET /api/admin/settings/fork` 返回 `revision`、`active`、`saved` 和 `restartRequired`。
 `POST` 必须携带同一 `revision` 与完整 `values`，版本过期返回 409，不自动覆盖。

@@ -18,10 +18,12 @@ use super::{map_store_error, publish_committed};
 use crate::{
     model::{
         AdminError, AdminErrorKind, MutationContext, Revision,
+        ipv6::{Ipv6Allocation, Ipv6ImportPolicy, Ipv6LeaseView, Ipv6Status},
         provider_credentials::{ProviderQuotaRequest, explicit_plan_type},
         proxies::*,
     },
     ports::{
+        ipv6::{Ipv6Controller, Ipv6ProxyStore},
         provider::ProviderAdminRegistry,
         proxy::{ProxyProbe, ProxyStore},
         store::AdminStoreErrorKind,
@@ -30,6 +32,27 @@ use crate::{
 
 #[async_trait]
 pub trait ProxiesService: Send + Sync {
+    async fn ipv6_policy(&self) -> Result<Ipv6ImportPolicy, AdminError>;
+    async fn set_ipv6_policy(
+        &self,
+        enabled: bool,
+        revision: u64,
+        context: &MutationContext,
+    ) -> Result<Ipv6ImportPolicy, AdminError>;
+    async fn ipv6_status(&self) -> Result<Ipv6Status, AdminError>;
+    async fn list_ipv6(&self) -> Result<Vec<Ipv6LeaseView>, AdminError>;
+    async fn allocate_ipv6(
+        &self,
+        request_id: String,
+        name: String,
+        account_id: Option<String>,
+        context: &MutationContext,
+    ) -> Result<Ipv6LeaseView, AdminError>;
+    async fn retire_ipv6(
+        &self,
+        request_id: &str,
+        context: &MutationContext,
+    ) -> Result<Ipv6LeaseView, AdminError>;
     async fn create_batch(
         &self,
         commands: Vec<Result<NewProxy, AdminError>>,
@@ -85,10 +108,12 @@ pub trait ProxiesService: Send + Sync {
 pub(crate) struct DefaultProxiesService {
     store: Arc<dyn ProxyStore>,
     probe: Arc<dyn ProxyProbe>,
-    snapshot: Arc<dyn SnapshotControl>,
+    pub(super) snapshot: Arc<dyn SnapshotControl>,
     providers: ProviderAdminRegistry,
     upstream_info: Option<Arc<dyn crate::ports::peer::PeerUpstreamService>>,
     test_slots: Semaphore,
+    pub(super) ipv6_store: Option<Arc<dyn Ipv6ProxyStore>>,
+    pub(super) ipv6_controller: Option<Arc<dyn Ipv6Controller>>,
 }
 
 impl DefaultProxiesService {
@@ -98,6 +123,8 @@ impl DefaultProxiesService {
         snapshot: Arc<dyn SnapshotControl>,
         providers: ProviderAdminRegistry,
         upstream_info: Option<Arc<dyn crate::ports::peer::PeerUpstreamService>>,
+        ipv6_store: Option<Arc<dyn Ipv6ProxyStore>>,
+        ipv6_controller: Option<Arc<dyn Ipv6Controller>>,
     ) -> Self {
         Self {
             store,
@@ -106,12 +133,141 @@ impl DefaultProxiesService {
             providers,
             upstream_info,
             test_slots: Semaphore::new(4),
+            ipv6_store,
+            ipv6_controller,
         }
     }
 }
 
 #[async_trait]
 impl ProxiesService for DefaultProxiesService {
+    async fn ipv6_status(&self) -> Result<Ipv6Status, AdminError> {
+        match self.ipv6_controller.as_ref() {
+            Some(controller) => controller.status().await,
+            None => Ok(Ipv6Status::default()),
+        }
+    }
+
+    async fn ipv6_policy(&self) -> Result<Ipv6ImportPolicy, AdminError> {
+        let store = self
+            .ipv6_store
+            .as_ref()
+            .ok_or_else(|| AdminError::unavailable("IPv6 存储不可用"))?;
+        store.policy().await.map_err(super::ipv6::store_error)
+    }
+
+    async fn set_ipv6_policy(
+        &self,
+        enabled: bool,
+        revision: u64,
+        context: &MutationContext,
+    ) -> Result<Ipv6ImportPolicy, AdminError> {
+        let store = self
+            .ipv6_store
+            .as_ref()
+            .ok_or_else(|| AdminError::unavailable("IPv6 存储不可用"))?;
+        let controller_id = if enabled {
+            let controller = self.ipv6_ports()?.1;
+            if !controller.status().await?.available {
+                return Err(AdminError::unavailable("IPv6 分配服务不可用"));
+            }
+            Some(controller.id())
+        } else {
+            None
+        };
+        store
+            .set_policy(controller_id, revision, context)
+            .await
+            .map_err(super::ipv6::store_error)
+    }
+
+    async fn list_ipv6(&self) -> Result<Vec<Ipv6LeaseView>, AdminError> {
+        match self.ipv6_store.as_ref() {
+            Some(store) => store.list().await.map_err(super::ipv6::store_error),
+            None => Ok(Vec::new()),
+        }
+    }
+
+    async fn allocate_ipv6(
+        &self,
+        request_id: String,
+        name: String,
+        account_id: Option<String>,
+        context: &MutationContext,
+    ) -> Result<Ipv6LeaseView, AdminError> {
+        let (store, controller) = self.ipv6_ports()?;
+        let request_id = uuid::Uuid::parse_str(&request_id)
+            .map_err(|_| AdminError::invalid("IPv6 请求标识须为 UUID"))?
+            .to_string();
+        let name = validate_name(&name)?;
+        if account_id
+            .as_ref()
+            .is_some_and(|id| id.is_empty() || id.len() > 128 || id.chars().any(char::is_control))
+        {
+            return Err(AdminError::invalid("账号 ID 不合法"));
+        }
+        let _guard = store
+            .lock(&request_id)
+            .await
+            .map_err(super::ipv6::store_error)?;
+        store
+            .begin(
+                Ipv6Allocation {
+                    request_id: request_id.clone(),
+                    controller_id: controller.id().to_owned(),
+                    name,
+                    account_id,
+                },
+                context,
+            )
+            .await
+            .map_err(super::ipv6::store_error)?;
+        self.reconcile_ipv6_locked(&request_id, context).await?;
+        Ok(store
+            .get(&request_id)
+            .await
+            .map_err(super::ipv6::store_error)?
+            .view)
+    }
+
+    async fn retire_ipv6(
+        &self,
+        request_id: &str,
+        context: &MutationContext,
+    ) -> Result<Ipv6LeaseView, AdminError> {
+        let (store, controller) = self.ipv6_ports()?;
+        if request_id.is_empty()
+            || request_id.len() > 128
+            || request_id.chars().any(char::is_control)
+        {
+            return Err(AdminError::invalid("IPv6 请求标识不合法"));
+        }
+        let _guard = store
+            .lock(request_id)
+            .await
+            .map_err(super::ipv6::store_error)?;
+        let current = store
+            .get(request_id)
+            .await
+            .map_err(super::ipv6::store_error)?;
+        if current.view.controller_id != controller.id() {
+            return Err(AdminError::conflict(
+                "此租约属于其他地址池，需恢复对应控制服务配置",
+            ));
+        }
+        if current.view.state != crate::model::ipv6::Ipv6LeaseState::Retired {
+            store
+                .begin_retire(request_id, true, context)
+                .await
+                .map_err(super::ipv6::store_error)?;
+            self.reconcile_ipv6_locked(request_id, context).await?;
+        }
+        Ok(store
+            .get(request_id)
+            .await
+            .map_err(super::ipv6::store_error)?
+            .view)
+    }
     async fn create_batch(
         &self,
         commands: Vec<Result<NewProxy, AdminError>>,
@@ -316,6 +472,21 @@ impl ProxiesService for DefaultProxiesService {
             .map_err(|_| AdminError::invalid("代理位置不合法"))?;
         // 只在开启自动模式或连接地址变化时检测，普通编辑不刷新已识别位置
         command.test = None;
+        let current = self
+            .store
+            .get(&command.id)
+            .await
+            .map_err(|e| map_store_error(e, "proxy"))?;
+        if current.managed_ipv6.is_some()
+            && (command.proxy.is_some()
+                || command
+                    .enabled
+                    .is_some_and(|enabled| enabled != current.enabled))
+        {
+            return Err(AdminError::invalid(
+                "独占 IPv6 代理不可修改出口或禁用，请解除绑定后退役",
+            ));
+        }
         if command.auto_location.is_some() || command.proxy.is_some() {
             let current = self
                 .store
@@ -347,6 +518,16 @@ impl ProxiesService for DefaultProxiesService {
         revision: Revision,
         context: &MutationContext,
     ) -> Result<Revision, AdminError> {
+        if self
+            .store
+            .get(id)
+            .await
+            .map_err(|e| map_store_error(e, "proxy"))?
+            .managed_ipv6
+            .is_some()
+        {
+            return Err(AdminError::conflict("请在 IPv6 出口中退役此代理"));
+        }
         let result = self
             .store
             .delete(id, revision, context)

@@ -4,6 +4,7 @@ pub mod client_distribution;
 mod command_line;
 pub mod config;
 pub mod fork_settings;
+pub mod ipv6_controller;
 mod logging;
 pub mod official_plugins;
 pub mod outbound;
@@ -29,7 +30,7 @@ use gateway_core::lifecycle::CancellationToken;
 use gateway_core::lifecycle::ConnectionLifecycle;
 use gateway_core::task::{WorkerContribution, WorkerLeaderLeasePort};
 
-pub use config::{HostConfig, LoadableConfig, load_config};
+pub use config::{HostConfig, Ipv6EgressConfig, LoadableConfig, load_config};
 
 /// Host 配置加载与各能力配置校验共用的脱敏错误
 #[derive(Debug, thiserror::Error)]
@@ -118,6 +119,24 @@ pub async fn initialize_command_line(mut config: HostConfig) -> Result<HostBundl
 }
 
 impl HostBundle {
+    /// 返回可选的宿主 IPv6 分配控制能力，未配置时保持普通代理行为
+    pub fn ipv6_controller(
+        &self,
+    ) -> Result<
+        Option<Arc<dyn gateway_admin::ports::ipv6::Ipv6Controller>>,
+        gateway_admin::model::AdminError,
+    > {
+        self.config
+            .ipv6_egress
+            .as_ref()
+            .map(|config| {
+                ipv6_controller::HttpIpv6Controller::new(config).map(|controller| {
+                    Arc::new(controller) as Arc<dyn gateway_admin::ports::ipv6::Ipv6Controller>
+                })
+            })
+            .transpose()
+    }
+
     /// 向启动控制台报告一个组装阶段已就绪
     pub fn report_startup_ready(&self, service: &'static str) {
         tracing::info!(target: "gateway_startup", service, "服务启动正常");

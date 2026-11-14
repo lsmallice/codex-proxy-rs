@@ -11,6 +11,7 @@ use axum::{
 };
 use gateway_admin::model::{
     AdminError as ServiceError, PageSize, Revision,
+    ipv6::Ipv6Status,
     proxies::{
         NewProxy, ProxyAccountListQuery, ProxyBatchResult, ProxyListQuery, ProxyMutation,
         ProxyRecord, ProxyTestResult, TestProxy, UpdateProxy,
@@ -106,6 +107,27 @@ struct ProbeRequest {
     proxy_url: AccountProxyUpdate,
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct Ipv6AllocateRequest {
+    request_id: String,
+    name: String,
+    account_id: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct Ipv6PolicyRequest {
+    enabled: bool,
+    revision: u64,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct Ipv6RetireRequest {
+    request_id: String,
+}
+
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 struct ProxyTestView {
@@ -150,6 +172,7 @@ struct ProxyAccountView {
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 struct ProxyView {
+    managed_ipv6: Option<gateway_admin::model::ipv6::Ipv6LeaseView>,
     max_websocket_connections: u32,
     enabled: bool,
     auto_location: bool,
@@ -170,10 +193,35 @@ struct ProxyView {
     updated_at_display: String,
 }
 
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct Ipv6StatusView {
+    configured: bool,
+    available: bool,
+    controller_id: Option<String>,
+    prefix: Option<String>,
+    issued: Option<String>,
+    message: Option<String>,
+}
+
+impl From<Ipv6Status> for Ipv6StatusView {
+    fn from(value: Ipv6Status) -> Self {
+        Self {
+            configured: value.configured,
+            available: value.available,
+            controller_id: value.controller_id,
+            prefix: value.prefix,
+            issued: value.issued,
+            message: value.message,
+        }
+    }
+}
+
 impl From<(ProxyRecord, crate::time::TimePresenter)> for ProxyView {
     fn from((record, time): (ProxyRecord, crate::time::TimePresenter)) -> Self {
         let endpoint = record.proxy.endpoint();
         Self {
+            managed_ipv6: record.managed_ipv6,
             auto_location: record.auto_location,
             max_websocket_connections: record.proxy.max_websocket_connections(),
             enabled: record.enabled,
@@ -243,6 +291,14 @@ where
         .route("/api/admin/proxies/delete", post(delete::<S>))
         .route("/api/admin/proxies/test", post(test::<S>))
         .route("/api/admin/proxies/probe", post(probe::<S>))
+        .route("/api/admin/proxies/ipv6/status", get(ipv6_status::<S>))
+        .route(
+            "/api/admin/proxies/ipv6/policy",
+            get(ipv6_policy::<S>).post(ipv6_set_policy::<S>),
+        )
+        .route("/api/admin/proxies/ipv6/leases", get(ipv6_leases::<S>))
+        .route("/api/admin/proxies/ipv6/allocate", post(ipv6_allocate::<S>))
+        .route("/api/admin/proxies/ipv6/retire", post(ipv6_retire::<S>))
 }
 
 fn revision(value: u64) -> Result<Revision, AdminError> {
@@ -254,6 +310,118 @@ fn revision(value: u64) -> Result<Revision, AdminError> {
 
 fn map_error(error: gateway_admin::model::AdminError) -> AdminError {
     super::wire::map_admin_service_error(error)
+}
+
+async fn ipv6_status<S>(
+    _: AdminAuth,
+    State(state): State<S>,
+) -> Result<impl IntoResponse, AdminError>
+where
+    S: SessionState + Send + Sync,
+{
+    let value = state
+        .admin_services()
+        .proxies()
+        .ipv6_status()
+        .await
+        .map_err(map_error)?;
+    Ok(AdminResponse::new(
+        StatusCode::OK,
+        AdminEnvelope::ok(Ipv6StatusView::from(value)),
+    ))
+}
+
+async fn ipv6_policy<S>(
+    _: AdminAuth,
+    State(state): State<S>,
+) -> Result<impl IntoResponse, AdminError>
+where
+    S: SessionState + Send + Sync,
+{
+    let value = state
+        .admin_services()
+        .proxies()
+        .ipv6_policy()
+        .await
+        .map_err(map_error)?;
+    Ok(AdminResponse::new(StatusCode::OK, AdminEnvelope::ok(value)))
+}
+
+async fn ipv6_set_policy<S>(
+    auth: AdminAuth,
+    State(state): State<S>,
+    AdminJson(request): AdminJson<Ipv6PolicyRequest>,
+) -> Result<impl IntoResponse, AdminError>
+where
+    S: SessionState + Send + Sync,
+{
+    revision(request.revision)?;
+    let value = state
+        .admin_services()
+        .proxies()
+        .set_ipv6_policy(
+            request.enabled,
+            request.revision,
+            &auth.context().mutation_context(),
+        )
+        .await
+        .map_err(map_error)?;
+    Ok(AdminResponse::new(StatusCode::OK, AdminEnvelope::ok(value)))
+}
+
+async fn ipv6_leases<S>(
+    _: AdminAuth,
+    State(state): State<S>,
+) -> Result<impl IntoResponse, AdminError>
+where
+    S: SessionState + Send + Sync,
+{
+    let items = state
+        .admin_services()
+        .proxies()
+        .list_ipv6()
+        .await
+        .map_err(map_error)?;
+    Ok(AdminResponse::new(StatusCode::OK, AdminEnvelope::ok(items)))
+}
+
+async fn ipv6_allocate<S>(
+    auth: AdminAuth,
+    State(state): State<S>,
+    AdminJson(request): AdminJson<Ipv6AllocateRequest>,
+) -> Result<impl IntoResponse, AdminError>
+where
+    S: SessionState + Send + Sync,
+{
+    let value = state
+        .admin_services()
+        .proxies()
+        .allocate_ipv6(
+            request.request_id,
+            request.name,
+            request.account_id,
+            &auth.context().mutation_context(),
+        )
+        .await
+        .map_err(map_error)?;
+    Ok(AdminResponse::new(StatusCode::OK, AdminEnvelope::ok(value)))
+}
+
+async fn ipv6_retire<S>(
+    auth: AdminAuth,
+    State(state): State<S>,
+    AdminJson(request): AdminJson<Ipv6RetireRequest>,
+) -> Result<impl IntoResponse, AdminError>
+where
+    S: SessionState + Send + Sync,
+{
+    let value = state
+        .admin_services()
+        .proxies()
+        .retire_ipv6(&request.request_id, &auth.context().mutation_context())
+        .await
+        .map_err(map_error)?;
+    Ok(AdminResponse::new(StatusCode::OK, AdminEnvelope::ok(value)))
 }
 
 async fn list<S>(

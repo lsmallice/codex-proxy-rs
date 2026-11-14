@@ -591,6 +591,7 @@ impl Environment {
                 self.store.admin_ports().plugins(),
                 self.store.admin_ports().plugin_state(),
                 PluginRuntimeConfig {
+                    maintenance_intervals_seconds: Default::default(),
                     cache_directory: self.directory.path().join("cache"),
                     host_version: "1.0.0".parse().unwrap(),
                     package_limits: PackageLimits::default(),
@@ -652,6 +653,7 @@ impl Environment {
                 snapshot: core.snapshot_control(),
                 account_probe: core.account_probe(),
                 proxy_probe: unavailable.clone(),
+                ipv6_controller: None,
                 client_distribution: unavailable.clone(),
                 system: unavailable,
                 client_key_verifier: core.client_key_verifier(),
