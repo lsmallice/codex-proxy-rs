@@ -1,5 +1,6 @@
 //! 账号管理用例测试及共享 Provider、存储替身
 
+mod handoff;
 mod reset_credit_automation;
 
 use gateway_core::engine::probe::AccountProbeTarget;

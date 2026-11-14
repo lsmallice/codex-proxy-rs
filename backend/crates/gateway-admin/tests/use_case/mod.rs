@@ -99,6 +99,7 @@ pub(super) struct AdminHarness {
     proxies: Arc<dyn gateway_admin::ports::proxy::ProxyStore>,
     proxy_probe: Arc<dyn gateway_admin::ports::proxy::ProxyProbe>,
     account_runtime: Arc<dyn AccountRuntimeStore>,
+    handoffs: Option<Arc<dyn gateway_core::provider_ports::AccountHandoffStore>>,
     account_groups: Arc<dyn AccountGroupStore>,
     snapshot: Arc<dyn SnapshotControl>,
     auth: Arc<dyn AuthStore>,
@@ -127,6 +128,7 @@ impl AdminHarness {
             proxies: Arc::new(proxies::TestProxies::default()),
             proxy_probe: Arc::new(proxies::TestProxies::default()),
             account_runtime: unavailable.clone(),
+            handoffs: None,
             account_groups: Arc::new(UnavailableAccountGroupStore),
             snapshot: Arc::new(NoopSnapshot),
             auth: Arc::new(BootstrapAuthStore::default()),
@@ -173,6 +175,14 @@ impl AdminHarness {
 
     pub(super) fn account_runtime(mut self, store: Arc<dyn AccountRuntimeStore>) -> Self {
         self.account_runtime = store;
+        self
+    }
+
+    pub(super) fn handoffs(
+        mut self,
+        store: Arc<dyn gateway_core::provider_ports::AccountHandoffStore>,
+    ) -> Self {
+        self.handoffs = Some(store);
         self
     }
 
@@ -269,6 +279,26 @@ impl AdminHarness {
     }
 
     pub(super) async fn build_bundle(self) -> gateway_admin::AdminBundle {
+        let mut store = AdminStorePorts::new(
+            AdminAccountStorePorts::new(
+                self.accounts,
+                self.account_runtime,
+                self.account_groups,
+                self.proxies,
+            ),
+            self.auth,
+            self.client_keys,
+            self.observability,
+            self.settings,
+            self.backup,
+            self.plugin_store,
+            Arc::new(plugins::TestPluginPorts),
+            Arc::new(plugins::TestPluginPorts),
+            Arc::new(plugins::TestPluginPorts),
+        );
+        if let Some(handoffs) = self.handoffs {
+            store = store.with_handoffs(handoffs);
+        }
         gateway_admin::initialize(
             AdminConfig {
                 session_absolute_ttl_minutes: 30 * 24 * 60,
@@ -279,23 +309,7 @@ impl AdminHarness {
             ClientConfig {
                 session_ttl_minutes: self.client_session_ttl_minutes,
             },
-            AdminStorePorts::new(
-                AdminAccountStorePorts::new(
-                    self.accounts,
-                    self.account_runtime,
-                    self.account_groups,
-                    self.proxies,
-                ),
-                self.auth,
-                self.client_keys,
-                self.observability,
-                self.settings,
-                self.backup,
-                self.plugin_store,
-                Arc::new(plugins::TestPluginPorts),
-                Arc::new(plugins::TestPluginPorts),
-                Arc::new(plugins::TestPluginPorts),
-            ),
+            store,
             gateway_admin::AdminRuntimePorts {
                 upstream_info: self.upstream_info,
                 timezone: Default::default(),

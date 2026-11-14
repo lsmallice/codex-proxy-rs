@@ -17,6 +17,33 @@ fn store_error(error: ProviderStoreError) -> AdminError {
 }
 
 impl DefaultAccountsService {
+    pub(super) async fn attach_handoff_capacity(&self, items: &mut [AccountDirectoryItem]) {
+        let Some(store) = self.handoffs.as_ref().filter(|_| !items.is_empty()) else {
+            return;
+        };
+        // 共享活动集有数量上限，整页只读取一次，观测失败不阻断账号目录
+        let snapshots = match store.list().await {
+            Ok(snapshots) => snapshots,
+            Err(error) => {
+                tracing::warn!(error = %error, "account handoff capacity projection is unavailable");
+                return;
+            }
+        };
+        for snapshot in snapshots {
+            if !snapshot.state.phase.active() {
+                continue;
+            }
+            if let Some(item) = items
+                .iter_mut()
+                .find(|item| item.account.id == snapshot.state.old_account_id)
+            {
+                let limit = u64::from(snapshot.state.old_limit);
+                item.handoff_limit =
+                    Some(item.capacity.total_slots.map_or(limit, |n| n.min(limit)));
+            }
+        }
+    }
+
     pub(super) async fn handoff_load_policy(&self) -> Result<AccountHandoffPolicy, AdminError> {
         self.handoff_store()?.policy().await.map_err(store_error)
     }

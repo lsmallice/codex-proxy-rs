@@ -1291,6 +1291,8 @@ pub struct AccountDirectoryItem {
     pub protection_rules: Vec<gateway_core::account::AccountProtectionMatch>,
     pub account: AccountRecord,
     pub capacity: super::accounts::AccountCapacity,
+    /// 当前交接的老号上限，仅在新号属于请求可用候选时生效
+    pub handoff_limit: Option<u64>,
     pub capabilities: super::accounts::ProviderAccountCapabilities,
     /// Provider 提供的套餐展示名称；未识别到套餐时为空
     pub plan_type_display: Option<String>,

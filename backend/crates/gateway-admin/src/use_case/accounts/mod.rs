@@ -551,8 +551,9 @@ impl DefaultAccountsService {
                     .usage_window()
                     .and_then(|(window, _)| window.local_usage.clone())
             });
-        Ok(AccountDirectoryItem {
+        let mut item = AccountDirectoryItem {
             protection_rules: stored.protection_rules,
+            handoff_limit: None,
             capacity: super::peer_link::upstream::account_capacity(
                 &stored.account,
                 stored.capacity,
@@ -569,7 +570,10 @@ impl DefaultAccountsService {
             usage,
             account: stored.account,
             quota,
-        })
+        };
+        self.attach_handoff_capacity(std::slice::from_mut(&mut item))
+            .await;
+        Ok(item)
     }
 }
 
@@ -693,7 +697,7 @@ impl AccountsService for DefaultAccountsService {
         self.attach_quota_local_usage(&page.items, &mut quotas)
             .await?;
         let mut api_key_usage = self.load_api_key_usage(&page.items, &quotas).await?;
-        let items = page
+        let mut items = page
             .items
             .into_iter()
             .zip(quotas)
@@ -713,6 +717,7 @@ impl AccountsService for DefaultAccountsService {
                 });
                 Ok(AccountDirectoryItem {
                     protection_rules: item.protection_rules,
+                    handoff_limit: None,
                     capacity: crate::model::accounts::AccountCapacity {
                         used_slots: in_flight
                             .as_ref()
@@ -736,6 +741,7 @@ impl AccountsService for DefaultAccountsService {
                 })
             })
             .collect::<Result<Vec<_>, AdminError>>()?;
+        self.attach_handoff_capacity(&mut items).await;
         Ok(AccountDirectoryPage {
             config_revision: page.config_revision,
             items,

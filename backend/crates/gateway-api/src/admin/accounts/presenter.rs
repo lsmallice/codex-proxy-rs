@@ -74,6 +74,7 @@ pub(super) fn account_view(
     let AccountDirectoryItem {
         account,
         capacity,
+        handoff_limit,
         capabilities,
         plan_type_display,
         projection,
@@ -147,6 +148,7 @@ pub(super) fn account_view(
         capacity: AccountCapacityView {
             used_slots: capacity.used_slots,
             total_slots: capacity.total_slots,
+            handoff_limit,
         },
         weight: account.weight.get(),
         model_access: account.model_access,

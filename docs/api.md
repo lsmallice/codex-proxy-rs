@@ -1145,7 +1145,9 @@ config 返回 `{ name, plaintextKey }`，仅读取服务端会话绑定的当前
 
 账号视图的 `capacity` 返回查询时的普通并发容量：`usedSlots` 不含独立审批池和排队请求，
 读取运行态失败时为 `null`。`totalSlots` 是按[并发与排队](#并发与排队)取值的本机上限，`null` 表示不限。上游独立执行其密钥限制
-交接临时上限按请求候选范围生效，不覆盖 `totalSlots`；当前交接档位在“并发交接”弹窗和交接接口中单独展示
+`capacity.handoffLimit` 是进行中交接的老号临时上限，取当前档位与原始有限上限的较小值；新号、未参与交接或未取得交接观测时为 `null`
+列表优先展示交接上限并标记“交接”，并发明细保留原始上限说明；`totalSlots` 和账号配置不被改写
+交接上限只在新号属于当前请求的可用候选时生效，不代表所有模型、权限范围或固定续接都受同一临时上限约束
 
 并发明细返回 `accountId`、`entries`、`total`、`page`、`pageSize` 和 `observedAt`，只统计普通并发池。每条包含 `leaseId`、`requestId`、`clientKeyId`、`clientKeyName`、`model`（入口请求模型）、`clientIp`、`startedAt`、`startedAtDisplay` 和 `occupiedMs`。占用时长从取得账号租约开始，不包含排队；缺少入口事实时相应字段为 `null`，租约仍计入总数
 

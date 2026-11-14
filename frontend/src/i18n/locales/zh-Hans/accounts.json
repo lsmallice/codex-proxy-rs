@@ -144,6 +144,8 @@
       "staleAccount": "账号 {accountId} 的页面数据已失效，请重新选择"
     },
     "capacity": {
+      "handoff": "交接",
+      "handoffDescription": "交接上限 {limit}，原始上限 {configured}，仅在新号可承接当前请求时生效",
       "concurrentRequestsLimit": "账号并发占用 {value}，上限 {value2}",
       "viewConcurrencyDetails": "{label}，查看并发明细"
     },

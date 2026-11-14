@@ -164,6 +164,7 @@ export interface Account {
   capacity: {
     usedSlots: number | null
     totalSlots: number | null
+    handoffLimit: number | null
   }
   weight: number
   modelAccess: AccountModelAccess

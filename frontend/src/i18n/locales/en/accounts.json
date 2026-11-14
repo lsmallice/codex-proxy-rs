@@ -144,6 +144,8 @@
       "staleAccount": "Account {accountId} is out of date, select it again"
     },
     "capacity": {
+      "handoff": "Handoff",
+      "handoffDescription": "Handoff limit {limit}, configured limit {configured}, applies only when the new account can serve this request",
       "concurrentRequestsLimit": "Concurrent requests: {value}, limit: {value2}",
       "viewConcurrencyDetails": "{label}, view concurrency details"
     },

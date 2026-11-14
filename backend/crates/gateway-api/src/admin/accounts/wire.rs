@@ -317,6 +317,7 @@ pub struct AccountView {
 pub struct AccountCapacityView {
     pub used_slots: Option<u64>,
     pub total_slots: Option<u64>,
+    pub handoff_limit: Option<u64>,
 }
 
 #[derive(Debug, Clone, Serialize)]
