@@ -470,10 +470,11 @@ impl WorkerRegistration {
     }
 }
 
-/// Final DB 明确没有相应持久化状态时允许的禁用原因
+/// 没有对应持久化状态或未配置可选服务时的显式禁用原因
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum WorkerDisabledReason {
     NoBufferedOpsEvents,
+    Ipv6NotConfigured,
 }
 
 impl WorkerDisabledReason {
@@ -481,6 +482,7 @@ impl WorkerDisabledReason {
     pub const fn kind(self) -> WorkerKind {
         match self {
             Self::NoBufferedOpsEvents => WorkerKind::OpsFlush,
+            Self::Ipv6NotConfigured => WorkerKind::Ipv6Egress,
         }
     }
 
@@ -488,6 +490,7 @@ impl WorkerDisabledReason {
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::NoBufferedOpsEvents => "ops events have no flush buffer",
+            Self::Ipv6NotConfigured => "IPv6 controller is not configured",
         }
     }
 }

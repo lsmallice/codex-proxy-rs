@@ -10,6 +10,34 @@ use gateway_admin::{
 };
 use gateway_core::account::{OutboundProxy, ProviderAccountId};
 
+#[tokio::test]
+async fn unconfigured_ipv6_explicitly_disables_its_worker_without_changing_proxy_services() {
+    use gateway_core::task::{WorkerContribution, WorkerDisabledReason, WorkerKind};
+    let mut bundle = super::AdminHarness::new().build_bundle().await;
+    let workers = bundle.take_worker_contributions();
+    let ipv6: Vec<_> = workers
+        .iter()
+        .filter(|w| w.kind() == WorkerKind::Ipv6Egress)
+        .collect();
+    assert_eq!(ipv6.len(), 1);
+    assert!(matches!(
+        ipv6[0],
+        WorkerContribution::Disabled {
+            kind: WorkerKind::Ipv6Egress,
+            reason: WorkerDisabledReason::Ipv6NotConfigured,
+        }
+    ));
+    assert!(
+        !bundle
+            .services()
+            .proxies()
+            .ipv6_status()
+            .await
+            .unwrap()
+            .configured
+    );
+}
+
 #[derive(Default)]
 pub(super) struct TestProxies {
     pub events: Option<super::accounts::EventLog>,

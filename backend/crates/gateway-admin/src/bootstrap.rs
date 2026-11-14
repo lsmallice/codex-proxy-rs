@@ -254,6 +254,11 @@ async fn initialize_inner(
     ];
     if ipv6_enabled {
         worker_contributions.push(use_case::ipv6::Ipv6Task(proxies_service).into_worker()?);
+    } else {
+        worker_contributions.push(gateway_core::task::WorkerContribution::Disabled {
+            kind: gateway_core::task::WorkerKind::Ipv6Egress,
+            reason: gateway_core::task::WorkerDisabledReason::Ipv6NotConfigured,
+        });
     }
     Ok(AdminBundle {
         services,
