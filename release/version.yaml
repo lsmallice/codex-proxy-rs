@@ -1,7 +1,7 @@
 version: 3.43.6
 published:
   '3':
-    stable: 3.43.5
-    rc: 3.43.5
-    beta: 3.43.5
-    alpha: 3.43.5
+    stable: 3.43.6
+    rc: 3.43.6
+    beta: 3.43.6
+    alpha: 3.43.6
