@@ -41,6 +41,13 @@ local in_flight = redis.call('ZCARD', KEYS[1])
 local max_concurrent = tonumber(ARGV[4])
 local retry_ms = 0
 
+if ARGV[7] ~= '' and redis.call('HGET', KEYS[5], 'old:' .. ARGV[8]) == ARGV[7] then
+  local ceiling = tonumber(redis.call('HGET', KEYS[5], 'limit:' .. ARGV[8]) or '0')
+  if ceiling > 0 and (max_concurrent == 0 or ceiling < max_concurrent) then
+    max_concurrent = ceiling
+  end
+end
+
 if max_concurrent > 0 and in_flight >= max_concurrent then
   local earliest = redis.call('ZRANGE', KEYS[1], 0, 0, 'WITHSCORES')
   if #earliest == 2 then
@@ -385,10 +392,19 @@ impl RedisCredentialLeaseRepository {
         request: &CredentialBoundedLeaseRequest,
         metadata: Option<&gateway_core::provider_ports::ProviderLeaseMetadata>,
     ) -> StoreResult<CredentialBoundedLeaseAcquisition> {
+        self.acquire_bounded(request, metadata, None).await
+    }
+
+    async fn acquire_bounded(
+        &self,
+        request: &CredentialBoundedLeaseRequest,
+        metadata: Option<&gateway_core::provider_ports::ProviderLeaseMetadata>,
+        handoff: Option<&str>,
+    ) -> StoreResult<CredentialBoundedLeaseAcquisition> {
         request.validate()?;
         let lease_request = request.lease_request();
         let attempt = self
-            .acquire_with_limits(&lease_request, request.max_concurrent, metadata)
+            .acquire_with_limits(&lease_request, request.max_concurrent, metadata, handoff)
             .await?;
         match attempt.grant {
             Some(grant) => Ok(CredentialBoundedLeaseAcquisition::Acquired(
@@ -493,6 +509,7 @@ impl RedisCredentialLeaseRepository {
         request: &CredentialLeaseRequest,
         max_concurrent: u32,
         metadata: Option<&gateway_core::provider_ports::ProviderLeaseMetadata>,
+        handoff: Option<&str>,
     ) -> StoreResult<LeaseAttempt> {
         request.validate()?;
         if max_concurrent == 0 && request.scope != CredentialLeaseScope::ProviderAccount {
@@ -511,12 +528,15 @@ impl RedisCredentialLeaseRepository {
                 .key(&keys[1])
                 .key(&keys[2])
                 .key(details::detail_key(&keys[0], &lease_id))
+                .key(super::account_handoff::handoff_key(&self.namespace))
                 .arg(owner)
                 .arg(&lease_id)
                 .arg(ttl_millis)
                 .arg(max_concurrent)
                 .arg(signal_ttl)
                 .arg(detail)
+                .arg(handoff.unwrap_or_default())
+                .arg(&request.resource_id)
                 .invoke_async(&mut connection)
                 .await
                 .map_err(|source| redis_unavailable("acquire credential lease", source))?;
@@ -691,7 +711,7 @@ impl RedisProviderLeaseCoordinator {
         }
         let acquisition = self
             .repository
-            .try_acquire_bounded_lease_with_metadata(
+            .acquire_bounded(
                 &CredentialBoundedLeaseRequest {
                     scope: CredentialLeaseScope::scheduling(request.concurrency_pool()),
                     resource_id: request.account_id().as_str().to_owned(),
@@ -700,6 +720,7 @@ impl RedisProviderLeaseCoordinator {
                     ttl,
                 },
                 request.metadata(),
+                request.account_handoff(),
             )
             .await
             .map_err(|source| crate::provider_unavailable("acquire scheduling lease", source))?;
@@ -763,7 +784,26 @@ impl ProviderLeasePort for RedisProviderLeaseCoordinator {
             let round_robin_cursor = self
                 .next_scheduling_cursor(client_api_key_id, provider_kind)
                 .await?;
-            Ok(ProviderSchedulingState::new(signals, round_robin_cursor))
+            let mut state = ProviderSchedulingState::new(signals, round_robin_cursor);
+            if pool == ProviderConcurrencyPool::Shared && provider_kind.as_str() == "openai" {
+                let reader = super::RedisAccountHandoffStore::new(
+                    self.repository.connection.clone(),
+                    &self.repository.namespace,
+                )
+                .map_err(|e| crate::provider_unavailable("create handoff reader", e))?;
+                let policy =
+                    gateway_core::provider_ports::AccountHandoffStore::policy(&reader).await?;
+                let handoffs = reader.capacities(accounts).await?;
+                let handled = if policy.enabled {
+                    reader.handled(accounts).await?
+                } else {
+                    Default::default()
+                };
+                state = state
+                    .with_handoffs(handoffs)
+                    .with_handoff_policy(policy, handled);
+            }
+            Ok(state)
         })
     }
 
@@ -840,7 +880,7 @@ impl CredentialLeaseRepository for RedisCredentialLeaseRepository {
         &self,
         request: &CredentialLeaseRequest,
     ) -> StoreResult<Option<CredentialLeaseGrant>> {
-        self.acquire_with_limits(request, 1, None)
+        self.acquire_with_limits(request, 1, None, None)
             .await
             .map(|attempt| attempt.grant)
     }

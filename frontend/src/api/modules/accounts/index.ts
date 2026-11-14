@@ -9,7 +9,6 @@ export {
   startAccountOAuth,
   stopAccountImportTask,
 } from './credentials'
-
 export type {
   AccountImportParam,
   AccountImportResponse,
@@ -21,6 +20,8 @@ export type {
   AccountOAuthStartResponse,
   ImportItemStatus,
 } from './credentials'
+
+export * from './handoff'
 
 export {
   batchUpdateAccounts,

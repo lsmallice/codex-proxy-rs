@@ -94,15 +94,18 @@ async fn initialize_inner(
     auth.ensure_default_admin(config.default_password.expose())
         .await?;
 
-    let accounts = initialize_accounts(
-        store.accounts(),
-        store.account_runtime(),
-        store.settings(),
-        timezone,
-        providers.clone(),
-        snapshot.clone(),
-        probe.clone(),
-        upstream_info.clone(),
+    let accounts: Arc<dyn AccountsService> = Arc::new(
+        DefaultAccountsService::new(
+            store.accounts(),
+            store.account_runtime(),
+            store.settings(),
+            timezone,
+            providers.clone(),
+            snapshot.clone(),
+            probe.clone(),
+            upstream_info.clone(),
+        )
+        .with_handoffs(store.handoffs()),
     );
     let backup_ports = store.backup();
     let backups = Arc::new(DefaultBackupService::new(
@@ -245,6 +248,7 @@ async fn initialize_inner(
         backup_task.into_worker()?,
         import_task.into_worker()?,
         freeze_recovery.into_worker()?,
+        use_case::accounts::AccountHandoffTask(accounts.clone()).into_worker()?,
         reset_credit_worker::ResetCreditAutomationTask {
             accounts,
             store: store.accounts(),

@@ -615,6 +615,7 @@ impl AdminAccountStorePorts {
 /// 该类型不提供通用拆包入口
 #[derive(Clone)]
 pub struct AdminStorePorts {
+    handoffs: Option<Arc<dyn gateway_core::provider_ports::AccountHandoffStore>>,
     accounts: AdminAccountStorePorts,
     auth: Arc<dyn AuthStore>,
     client_keys: Arc<dyn ClientKeyStore>,
@@ -678,6 +679,7 @@ impl AdminStorePorts {
             plugin_resources,
             usage_data,
             ipv6: None,
+            handoffs: None,
         }
     }
 
@@ -690,6 +692,19 @@ impl AdminStorePorts {
     #[must_use]
     pub fn ipv6(&self) -> Option<Arc<dyn super::ipv6::Ipv6ProxyStore>> {
         self.ipv6.clone()
+    }
+
+    #[must_use]
+    pub fn with_handoffs(
+        mut self,
+        store: Arc<dyn gateway_core::provider_ports::AccountHandoffStore>,
+    ) -> Self {
+        self.handoffs = Some(store);
+        self
+    }
+
+    pub fn handoffs(&self) -> Option<Arc<dyn gateway_core::provider_ports::AccountHandoffStore>> {
+        self.handoffs.clone()
     }
 
     #[must_use]

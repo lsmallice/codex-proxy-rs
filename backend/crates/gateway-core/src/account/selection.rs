@@ -513,6 +513,7 @@ impl AccountQuotaSignals {
 /// 账号持久事实与可重建运行信号的请求级组合
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AccountCandidate {
+    pub handoff: Option<super::AccountHandoffCapacity>,
     /// 本次选号已确认的上游默认上限，与本地可编辑覆盖独立
     pub inherited_concurrency: Option<super::AccountConcurrencyLimit>,
     pub account: ProviderAccount,
@@ -568,6 +569,18 @@ pub struct AccountSelectionContext {
 }
 
 impl AccountSelectionContext {
+    pub fn active_handoff<'a>(
+        &self,
+        candidate: &'a AccountCandidate,
+    ) -> Option<&'a super::AccountHandoffCapacity> {
+        candidate.handoff.as_ref().filter(|handoff| {
+            self.reserved_concurrency == 0
+                && self
+                    .excluded_accounts
+                    .iter()
+                    .all(|id| id.as_str() != handoff.new_account_id)
+        })
+    }
     /// 本请求在该账号上可使用的并发上限；资格判断、租约与策略投影必须共用这一口径
     #[must_use]
     pub fn concurrency_limit(&self, candidate: &AccountCandidate) -> AccountConcurrency {
@@ -579,7 +592,13 @@ impl AccountSelectionContext {
                 .map_or(self.policy.max_concurrent_per_account(), |limit| {
                     limit.into_non_zero().into()
                 });
-            candidate.account.effective_concurrency(default)
+            let configured = candidate.account.effective_concurrency(default);
+            self.active_handoff(candidate)
+                .map_or(configured, |handoff| {
+                    AccountConcurrency::new(configured.limit().map_or(handoff.old_limit, |limit| {
+                        limit.get().min(handoff.old_limit)
+                    }))
+                })
         }
     }
 }
@@ -778,6 +797,20 @@ impl AccountSelector {
             }
         }
         eligible.retain(|candidate| candidate.account.weight() == highest_weight);
+
+        // 亲和与管理员权重优先，允许重新选号时先消耗交接老号的剩余容量
+        if let Some(candidate) = eligible
+            .iter()
+            .copied()
+            .filter(|c| context.active_handoff(c).is_some())
+            .min_by_key(|c| (c.signals.last_started_at, c.account.id()))
+        {
+            return Some(AccountSelection {
+                candidate,
+                preferred,
+                policy_choice: false,
+            });
+        }
 
         let candidate = match context.policy.strategy() {
             RotationStrategy::QuotaResetPriority => {

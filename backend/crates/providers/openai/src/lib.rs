@@ -185,6 +185,7 @@ pub async fn initialize(
             std::time::Duration::from_secs(config.model_unsupported_cooldown_seconds),
         )
         .with_upstream_info(upstream_info)
+        .with_handoffs(ports.handoffs())
         .with_preconnect(config.ws_preconnect.enabled),
     );
     let core_provider: Arc<dyn Provider> = Arc::new(

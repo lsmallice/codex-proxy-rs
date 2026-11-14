@@ -139,6 +139,10 @@ async fn connect(
         redis_connection.clone(),
         REDIS_NAMESPACE,
     )?);
+    let handoffs = Arc::new(redis::RedisAccountHandoffStore::new(
+        redis_connection.clone(),
+        REDIS_NAMESPACE,
+    )?);
     let provider_accounts = Arc::new(
         postgres::PgProviderAccountRepository::new(pool.clone())
             .with_account_error_protection(cooldowns.clone()),
@@ -225,7 +229,8 @@ async fn connect(
         plugins,
         usage_data,
     )
-    .with_ipv6(Arc::new(postgres::PgIpv6Repository::new(pool.clone())));
+    .with_ipv6(Arc::new(postgres::PgIpv6Repository::new(pool.clone())))
+    .with_handoffs(handoffs.clone());
 
     let execution_repository = Arc::new(postgres::PgExecutionStore::new(pool.clone()));
     let (execution, execution_writer) =
@@ -293,7 +298,8 @@ async fn connect(
         runtime_policy,
         oauth_pending,
         diagnostics.clone(),
-    );
+    )
+    .with_handoffs(handoffs);
     let worker_leader_lease = Arc::new(redis::worker_lease::RedisWorkerLeaderLeasePort::new(
         credential_leases,
     ));

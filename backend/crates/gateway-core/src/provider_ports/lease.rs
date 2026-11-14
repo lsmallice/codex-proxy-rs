@@ -20,17 +20,23 @@ pub enum ProviderConcurrencyPool {
 /// 一个 Provider 的完整可重建调度状态
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ProviderSchedulingState {
+    handoff_policy: crate::account::AccountHandoffPolicy,
+    handoff_handled: std::collections::BTreeSet<ProviderAccountId>,
+    handoffs: BTreeMap<ProviderAccountId, crate::account::AccountHandoffCapacity>,
     signals: BTreeMap<ProviderAccountId, AccountRuntimeSignals>,
     round_robin_cursor: u64,
 }
 
 impl ProviderSchedulingState {
     #[must_use]
-    pub const fn new(
+    pub fn new(
         signals: BTreeMap<ProviderAccountId, AccountRuntimeSignals>,
         round_robin_cursor: u64,
     ) -> Self {
         Self {
+            handoffs: BTreeMap::new(),
+            handoff_policy: Default::default(),
+            handoff_handled: Default::default(),
             signals,
             round_robin_cursor,
         }
@@ -39,6 +45,36 @@ impl ProviderSchedulingState {
     #[must_use]
     pub const fn signals(&self) -> &BTreeMap<ProviderAccountId, AccountRuntimeSignals> {
         &self.signals
+    }
+
+    #[must_use]
+    pub fn with_handoffs(
+        mut self,
+        handoffs: BTreeMap<ProviderAccountId, crate::account::AccountHandoffCapacity>,
+    ) -> Self {
+        self.handoffs = handoffs;
+        self
+    }
+
+    pub fn handoffs(&self) -> &BTreeMap<ProviderAccountId, crate::account::AccountHandoffCapacity> {
+        &self.handoffs
+    }
+
+    #[must_use]
+    pub fn with_handoff_policy(
+        mut self,
+        policy: crate::account::AccountHandoffPolicy,
+        handled: std::collections::BTreeSet<ProviderAccountId>,
+    ) -> Self {
+        self.handoff_policy = policy;
+        self.handoff_handled = handled;
+        self
+    }
+    pub fn handoff_policy(&self) -> &crate::account::AccountHandoffPolicy {
+        &self.handoff_policy
+    }
+    pub fn handoff_handled(&self) -> &std::collections::BTreeSet<ProviderAccountId> {
+        &self.handoff_handled
     }
 
     #[must_use]
@@ -61,6 +97,7 @@ pub struct ProviderLeaseMetadata {
 /// 请求级账号 lease 的全部中立事实
 #[derive(Debug, Clone)]
 pub struct ProviderSchedulingLeaseRequest {
+    account_handoff: Option<String>,
     metadata: Option<std::sync::Arc<ProviderLeaseMetadata>>,
     provider_kind: ProviderKind,
     account_id: ProviderAccountId,
@@ -81,6 +118,7 @@ impl ProviderSchedulingLeaseRequest {
         deadline: impl Into<crate::lifecycle::Deadline>,
     ) -> Self {
         Self {
+            account_handoff: None,
             metadata: None,
             provider_kind,
             account_id,
@@ -99,6 +137,16 @@ impl ProviderSchedulingLeaseRequest {
     ) -> Self {
         self.metadata = metadata;
         self
+    }
+
+    #[must_use]
+    pub fn with_account_handoff(mut self, id: Option<String>) -> Self {
+        self.account_handoff = id;
+        self
+    }
+
+    pub fn account_handoff(&self) -> Option<&str> {
+        self.account_handoff.as_deref()
     }
 
     #[must_use]

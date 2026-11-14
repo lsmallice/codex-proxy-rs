@@ -275,6 +275,7 @@ impl GrokAccountSessionSelector {
                     Ok(AccountCandidate {
                         account,
                         signals,
+                        handoff: None,
                         inherited_concurrency: None,
                     })
                 })

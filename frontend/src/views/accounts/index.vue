@@ -3,7 +3,7 @@ import type { Account } from '@/api'
 
 import { useTableColumns, ZCard, ZCheckbox, ZConfirmDialog, ZIconButton, ZPageHeader, ZPagination, ZTable, ZTableColumnSettings } from '@codex-proxy/ui'
 
-import { ChevronDown } from '@lucide/vue'
+import { ArrowRightLeft, ChevronDown, RefreshCw } from '@lucide/vue'
 import { ref, shallowRef } from 'vue'
 import { useI18n } from 'vue-i18n'
 import AccountPlanBadge from '@/components/account/AccountPlanBadge.vue'
@@ -21,6 +21,7 @@ import AccountConcurrencyModal from './components/AccountConcurrencyModal.vue'
 import AccountConnectionTestModal from './components/AccountConnectionTestModal.vue'
 import AccountEditModal from './components/AccountEditModal.vue'
 import AccountFilters from './components/AccountFilters.vue'
+import AccountHandoffModal from './components/AccountHandoffModal.vue'
 import AccountIdentityCell from './components/AccountIdentityCell.vue'
 import AccountOverviewCards from './components/AccountOverviewCards.vue'
 import AccountTableActions from './components/AccountTableActions.vue'
@@ -39,6 +40,7 @@ const { t } = useI18n({ useScope: 'global' })
 
 const concurrencyAccount = shallowRef<Account | null>(null)
 const showConcurrency = shallowRef(false)
+const showHandoff = shallowRef(false)
 function openConcurrency(account: Account) {
   concurrencyAccount.value = account
   showConcurrency.value = true
@@ -213,6 +215,7 @@ const {
 </script>
 
 <template>
+  <AccountHandoffModal v-model="showHandoff" />
   <div class="flex min-h-0 w-full flex-col xl:h-[calc(100dvh-3rem)] xl:flex-none!">
     <ZPageHeader
       :title="t('navigation.accounts')"
@@ -245,6 +248,18 @@ const {
           @edit-selected="openBatchEdit"
         >
           <template #actions>
+            <ZIconButton
+              :aria-label="t('accounts.filters.refreshList')"
+              :title="t('accounts.filters.refreshList')"
+              :loading="loading"
+              :disabled="loading"
+              @click="loadAccounts()"
+            >
+              <RefreshCw class="size-4" />
+            </ZIconButton>
+            <ZIconButton :aria-label="t('accounts.handoff.title')" :title="t('accounts.handoff.title')" @click="showHandoff = true">
+              <ArrowRightLeft class="size-4" />
+            </ZIconButton>
             <ZTableColumnSettings
               :options="columnOptions"
               @change="setColumnVisible"

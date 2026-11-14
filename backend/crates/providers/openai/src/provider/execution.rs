@@ -842,6 +842,11 @@ pub(super) fn cold_response_stream(response: ColdResponse) -> EventStream {
             upstream_model: Some(&upstream_model),
         };
         let mut active_account = lease.account().clone();
+        let mut handoff_reported = false;
+        let handoff_started_at = if context.account_eligibility() == gateway_core::account::AccountEligibilityPolicy::Enforce {
+            context.lease_metadata().and_then(|m| m.started_at.duration_since(SystemTime::UNIX_EPOCH).ok())
+                .and_then(|d| u64::try_from(d.as_millis()).ok())
+        } else { None };
         let encrypted = if ws_response_recovery.encrypted_history {
             response_recovery_slots.try_acquire().ok().and_then(|_permit| {
                 encrypted_history::Attempt::prepare(&request, &active_account, &installation_id, session_transport_key.as_ref(), rejected_ciphertexts)
@@ -1321,6 +1326,12 @@ pub(super) fn cold_response_stream(response: ColdResponse) -> EventStream {
                 }
                 attach_openai_session_update(&mut events, &mut session_capture);
                 if allows_account_state_mutation && completed && terminal_failure.is_none() {
+                    if !handoff_reported && !terminal_response_is_incomplete(&events)
+                        && let Some(started) = handoff_started_at
+                    {
+                        selector.record_handoff_success(&active_account, started).await;
+                        handoff_reported = true;
+                    }
                     // 完成事实交给下游前更新账号健康，绑定已经在发送前完成
                     let started = Instant::now();
                     selector
@@ -1459,6 +1470,11 @@ pub(super) fn cold_response_stream(response: ColdResponse) -> EventStream {
                 session_transport_recovery.websocket_succeeded(key);
             }
             if allows_account_state_mutation && completed && terminal_failure.is_none() {
+                if !handoff_reported && !terminal_response_is_incomplete(&events)
+                    && let Some(started) = handoff_started_at
+                {
+                    selector.record_handoff_success(&active_account, started).await;
+                }
                 // 尾部 finish() 也可能产出 completed，账号健康更新先于下游 yield
                 selector
                     .record_success(&active_account)

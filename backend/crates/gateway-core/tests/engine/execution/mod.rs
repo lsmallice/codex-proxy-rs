@@ -2115,6 +2115,7 @@ impl Provider for PolicySelectingProvider {
         )
         .with_scheduling(None, AccountWeight::new(100).unwrap());
         let candidates = [AccountCandidate {
+            handoff: None,
             inherited_concurrency: None,
             account,
             signals: AccountRuntimeSignals {

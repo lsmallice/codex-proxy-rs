@@ -1,5 +1,6 @@
 //! 账号领域测试入口，以及候选账号与调度输入构造辅助
 
+mod handoff;
 mod location;
 mod model_access;
 mod proxy;
@@ -50,6 +51,7 @@ fn account(id: &str) -> ProviderAccount {
 
 fn candidate(id: &str, in_flight: u32, remaining: Option<u64>) -> AccountCandidate {
     AccountCandidate {
+        handoff: None,
         inherited_concurrency: None,
         account: account(id),
         signals: AccountRuntimeSignals {
@@ -216,6 +218,7 @@ fn inconclusive_quota_observation_cannot_erase_confirmed_access() {
 fn diagnostic_selection_bypasses_all_local_account_eligibility() {
     let observed_at = SystemTime::now();
     let exhausted = AccountCandidate {
+        handoff: None,
         inherited_concurrency: None,
         account: account("acct_exhausted").with_account_facts(
             true,
@@ -235,6 +238,7 @@ fn diagnostic_selection_bypasses_all_local_account_eligibility() {
         },
     };
     let disabled = AccountCandidate {
+        handoff: None,
         inherited_concurrency: None,
         account: account("acct_disabled").with_account_facts(
             false,

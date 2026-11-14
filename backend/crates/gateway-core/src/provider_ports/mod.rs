@@ -1,7 +1,9 @@
 //! Provider 运行时所需的存储合同，按能力组织端口与共享策略
 
 mod error;
+mod handoff;
 pub use error::{ProviderStoreError, ProviderStoreErrorKind};
+pub use handoff::AccountHandoffStore;
 mod lease;
 pub use lease::{
     ProviderConcurrencyPool, ProviderLeaseAcquisition, ProviderLeaseGuard, ProviderLeaseMetadata,

@@ -1,6 +1,8 @@
 //! 统一账号目录与原生 Provider 分派
 
+mod handoff;
 mod reset_credit_automation;
+pub(crate) use handoff::AccountHandoffTask;
 
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -55,6 +57,51 @@ const CONNECTION_TEST_INPUT: &str = "Reply with exactly OK.";
 /// 统一账号页消费的服务
 #[async_trait]
 pub trait AccountsService: Send + Sync {
+    async fn handoff_policy(
+        &self,
+    ) -> Result<gateway_core::account::AccountHandoffPolicy, AdminError> {
+        Err(AdminError::unavailable("账号交接服务不可用"))
+    }
+    async fn set_handoff_policy(
+        &self,
+        _enabled: bool,
+        _config: gateway_core::account::AccountHandoffConfig,
+        _revision: u64,
+        _context: &MutationContext,
+    ) -> Result<gateway_core::account::AccountHandoffPolicy, AdminError> {
+        Err(AdminError::unavailable("账号交接服务不可用"))
+    }
+    async fn handoffs(
+        &self,
+    ) -> Result<Vec<gateway_core::account::AccountHandoffSnapshot>, AdminError> {
+        Ok(Vec::new())
+    }
+    async fn handoff_records(
+        &self,
+        _history: bool,
+        _page: u32,
+        _page_size: u32,
+    ) -> Result<gateway_core::account::AccountHandoffPage, AdminError> {
+        Err(AdminError::unavailable("账号交接服务不可用"))
+    }
+    async fn start_handoff(
+        &self,
+        _command: gateway_core::account::StartAccountHandoff,
+        _context: &MutationContext,
+    ) -> Result<gateway_core::account::AccountHandoffSnapshot, AdminError> {
+        Err(AdminError::unavailable("账号交接服务不可用"))
+    }
+    async fn cancel_handoff(
+        &self,
+        _id: String,
+        _revision: u64,
+        _context: &MutationContext,
+    ) -> Result<(), AdminError> {
+        Err(AdminError::unavailable("账号交接服务不可用"))
+    }
+    async fn reconcile_handoffs(&self) -> Result<(), AdminError> {
+        Ok(())
+    }
     async fn concurrency(
         &self,
         account_id: ProviderAccountId,
@@ -184,6 +231,7 @@ pub trait AccountsService: Send + Sync {
 }
 
 pub(crate) struct DefaultAccountsService {
+    handoffs: Option<Arc<dyn gateway_core::provider_ports::AccountHandoffStore>>,
     accounts: Arc<dyn AccountStore>,
     account_runtime: Arc<dyn AccountRuntimeStore>,
     settings: Arc<dyn crate::ports::store::SettingsStore>,
@@ -213,6 +261,7 @@ impl DefaultAccountsService {
         upstream_info: Option<Arc<dyn crate::ports::peer::PeerUpstreamService>>,
     ) -> Self {
         Self {
+            handoffs: None,
             accounts,
             account_runtime,
             settings,
@@ -526,6 +575,52 @@ impl DefaultAccountsService {
 
 #[async_trait]
 impl AccountsService for DefaultAccountsService {
+    async fn handoff_records(
+        &self,
+        history: bool,
+        page: u32,
+        page_size: u32,
+    ) -> Result<gateway_core::account::AccountHandoffPage, AdminError> {
+        self.handoff_records_page(history, page, page_size).await
+    }
+    async fn handoff_policy(
+        &self,
+    ) -> Result<gateway_core::account::AccountHandoffPolicy, AdminError> {
+        self.handoff_load_policy().await
+    }
+    async fn set_handoff_policy(
+        &self,
+        enabled: bool,
+        config: gateway_core::account::AccountHandoffConfig,
+        revision: u64,
+        context: &MutationContext,
+    ) -> Result<gateway_core::account::AccountHandoffPolicy, AdminError> {
+        self.handoff_save_policy(enabled, config, revision, context)
+            .await
+    }
+    async fn handoffs(
+        &self,
+    ) -> Result<Vec<gateway_core::account::AccountHandoffSnapshot>, AdminError> {
+        self.handoff_list().await
+    }
+    async fn start_handoff(
+        &self,
+        command: gateway_core::account::StartAccountHandoff,
+        context: &MutationContext,
+    ) -> Result<gateway_core::account::AccountHandoffSnapshot, AdminError> {
+        self.handoff_start(command, context).await
+    }
+    async fn cancel_handoff(
+        &self,
+        id: String,
+        revision: u64,
+        context: &MutationContext,
+    ) -> Result<(), AdminError> {
+        self.handoff_cancel(id, revision, context).await
+    }
+    async fn reconcile_handoffs(&self) -> Result<(), AdminError> {
+        self.handoff_reconcile().await
+    }
     async fn concurrency(
         &self,
         account_id: ProviderAccountId,

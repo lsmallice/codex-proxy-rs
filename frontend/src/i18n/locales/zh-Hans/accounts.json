@@ -170,6 +170,7 @@
       "saved": "账号已更新"
     },
     "filters": {
+      "refreshList": "刷新账号列表",
       "allGroups": "全部分组",
       "ungroupedAccounts": "未分组账号",
       "disabled": "{name}（已禁用）",
@@ -646,6 +647,41 @@
       "morePlans": "查看其余 {count} 种套餐",
       "nodeQuota": "节点额度",
       "quota": "上游额度"
+    },
+    "handoff": {
+      "activeTab": "进行中",
+      "historyTab": "历史记录",
+      "recordsView": "交接记录视图",
+      "retention": "近 {days} 天，最多 {count} 条",
+      "finalLimit": "最终老号并发上限 {limit}",
+      "finishedAt": "完成时间 {time}",
+      "endReason": "结束原因：{reason}",
+      "emptyHistory": "暂无历史交接记录",
+      "automatic": "所有入口的新订阅账号自动交接",
+      "saveDefaults": "保存交接默认参数",
+      "title": "并发交接",
+      "active": "进行中 {count} 组",
+      "refresh": "刷新交接",
+      "old": "老账号",
+      "new": "新账号",
+      "initial": "新号初始承接目标",
+      "minimum": "老号保留并发",
+      "decrement": "每档降低",
+      "stable": "稳定观察秒数",
+      "successes": "最低成功请求数",
+      "start": "开始交接",
+      "retry": "确认提交结果",
+      "cancel": "取消交接",
+      "cancelWarning": "取消后解除临时交接上限，账号原始配置保持不变",
+      "empty": "暂无进行中的交接",
+      "capacity": "老号 {old} / {limit} · 新号在途 {fresh}",
+      "phases": {
+        "observing": "观察中",
+        "paused": "已暂停",
+        "retaining": "消耗余量",
+        "completed": "已完成",
+        "cancelled": "已取消"
+      }
     }
   }
 }

@@ -7,6 +7,7 @@ mod catalog;
 mod codec;
 mod cookie;
 mod eligibility;
+mod handoff;
 mod oauth;
 mod profile_statistics;
 mod quota;

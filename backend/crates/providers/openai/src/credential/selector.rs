@@ -132,6 +132,7 @@ pub(crate) struct CodexCyberPolicyScope {
 
 #[derive(Clone)]
 pub struct CodexCredentialSelector {
+    handoffs: Option<Arc<dyn gateway_core::provider_ports::AccountHandoffStore>>,
     waiting: Arc<ConcurrencyWaitQueue<ProviderAccountId>>,
     reserved_waiting: Arc<ConcurrencyWaitQueue<ProviderAccountId>>,
     provider_kind: ProviderKind,
@@ -296,6 +297,7 @@ impl CodexCredentialSelector {
         model_unsupported_cooldown: Duration,
     ) -> Self {
         Self {
+            handoffs: None,
             provider_kind,
             repository,
             leases,
@@ -314,6 +316,16 @@ impl CodexCredentialSelector {
             account_feedback,
             scheduling_projection: Arc::new(SchedulingProjectionCache::default()),
         }
+    }
+
+    /// 交接反馈使用共享运行端口，不修改凭据配置
+    #[must_use]
+    pub(crate) fn with_handoffs(
+        mut self,
+        handoffs: Option<Arc<dyn gateway_core::provider_ports::AccountHandoffStore>>,
+    ) -> Self {
+        self.handoffs = handoffs;
+        self
     }
 
     /// 请求内补发复核实时账号与冷却事实，不复用短时选号投影
@@ -996,7 +1008,7 @@ impl CodexCredentialSelector {
                     }
                 }
             }
-            let scheduling = self
+            let mut scheduling = self
                 .leases
                 .load_state(
                     request.attempt.client_api_key_ref(),
@@ -1048,6 +1060,7 @@ impl CodexCredentialSelector {
                         .with_rate_limit(rate_limits.get(account.id()).copied().flatten())
                         .with_runtime_health(health.0, health.1);
                     AccountCandidate {
+                        handoff: None,
                         account,
                         signals,
                         inherited_concurrency,
@@ -1080,6 +1093,57 @@ impl CodexCredentialSelector {
                     .publish(key.clone(), projection_started, &candidates);
             }
             drop(projection_fill);
+            if !diagnostic
+                && pinned_account.is_none()
+                && !request.guardian
+                && let Some(store) = &self.handoffs
+                && super::handoff::prepare(
+                    store.as_ref(),
+                    &candidates,
+                    &scheduling,
+                    request.attempt.account_scope().map(|s| s.as_ref()),
+                    request.attempt.account_selection_policy(),
+                    request.attempt.excluded_accounts(),
+                )
+                .await?
+            {
+                let ids = candidates
+                    .iter()
+                    .map(|c| c.account.id().clone())
+                    .collect::<Vec<_>>();
+                scheduling = self
+                    .leases
+                    .load_state(
+                        request.attempt.client_api_key_ref(),
+                        &self.provider_kind,
+                        &ids,
+                        concurrency_pool,
+                    )
+                    .await?;
+            }
+            // 对端必须在同一请求的授权、模型和传输候选中，固定续接不参与交接分流
+            let ready_ids = candidates
+                .iter()
+                .filter(|c| {
+                    c.account
+                        .status_projection(SystemTime::now(), c.signals.cooldown)
+                        .status
+                        == AccountStatus::Normal
+                })
+                .map(|c| c.account.id().as_str().to_owned())
+                .collect::<std::collections::BTreeSet<_>>();
+            for candidate in &mut candidates {
+                candidate.handoff = if !diagnostic && pinned_account.is_none() && !request.guardian
+                {
+                    scheduling
+                        .handoffs()
+                        .get(candidate.account.id())
+                        .filter(|h| ready_ids.contains(&h.new_account_id))
+                        .cloned()
+                } else {
+                    None
+                };
+            }
             let mut affinity = binding
                 .as_ref()
                 .filter(|_| affinity_mode != AccountAffinity::Relaxed)
@@ -1368,6 +1432,9 @@ impl CodexCredentialSelector {
                             request.attempt.deadline(),
                         )
                         .with_metadata(request.attempt.lease_metadata())
+                        .with_account_handoff(
+                            context.active_handoff(selected).map(|h| h.id.clone()),
+                        )
                         .with_concurrency_pool(concurrency_pool)
                         .with_cancellation(request.attempt.cancellation().clone()),
                     ))
@@ -1769,6 +1836,13 @@ impl CodexCredentialSelector {
         failure: CodexAccountFailure,
         message: Option<String>,
     ) -> Result<(), CredentialSelectionError> {
+        if let Some(handoffs) = &self.handoffs
+            && let Err(error) = handoffs
+                .feedback(account.id().as_str().to_owned(), false, None)
+                .await
+        {
+            tracing::warn!(account_id = %account.id(), error = %error, "账号交接失败观测写入失败");
+        }
         let now = SystemTime::now();
         let message = message.filter(|value| !value.trim().is_empty());
         match failure {
@@ -1898,6 +1972,20 @@ impl CodexCredentialSelector {
             )
             .await?;
         Ok(())
+    }
+
+    pub(crate) async fn record_handoff_success(
+        &self,
+        account: &ProviderAccount,
+        started_at_ms: u64,
+    ) {
+        if let Some(handoffs) = &self.handoffs
+            && let Err(error) = handoffs
+                .feedback(account.id().as_str().to_owned(), true, Some(started_at_ms))
+                .await
+        {
+            tracing::warn!(account_id = %account.id(), error = %error, "账号交接成功观测写入失败");
+        }
     }
 
     pub async fn record_success(&self, account: &ProviderAccount) {

@@ -55,6 +55,7 @@ fn account_id(id: &str) -> ProviderAccountId {
 
 fn candidate(id: &str) -> AccountCandidate {
     AccountCandidate {
+        handoff: None,
         inherited_concurrency: None,
         account: ProviderAccount::new(
             account_id(id),

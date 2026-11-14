@@ -170,6 +170,7 @@
       "saved": "Account updated"
     },
     "filters": {
+      "refreshList": "Refresh account list",
       "allGroups": "All",
       "ungroupedAccounts": "Ungrouped",
       "disabled": "{name} (disabled)",
@@ -646,6 +647,41 @@
       "morePlans": "View {count} more plans",
       "nodeQuota": "Node quota",
       "quota": "Upstream quota"
+    },
+    "handoff": {
+      "activeTab": "In progress",
+      "historyTab": "History",
+      "recordsView": "Handoff records view",
+      "retention": "Last {days} days, up to {count} records",
+      "finalLimit": "Final existing-account concurrency limit {limit}",
+      "finishedAt": "Finished at {time}",
+      "endReason": "End reason: {reason}",
+      "emptyHistory": "No handoff history",
+      "automatic": "Automatic handoff for newly imported subscription accounts",
+      "saveDefaults": "Save handoff defaults",
+      "title": "Concurrency handoff",
+      "active": "Active pairs: {count}",
+      "refresh": "Refresh handoffs",
+      "old": "Existing account",
+      "new": "New account",
+      "initial": "Initial new-account target",
+      "minimum": "Retained concurrency",
+      "decrement": "Decrease per step",
+      "stable": "Stable window in seconds",
+      "successes": "Minimum successful requests",
+      "start": "Start handoff",
+      "retry": "Confirm submission",
+      "cancel": "Cancel handoff",
+      "cancelWarning": "Cancel removes the temporary ceiling without changing account configuration",
+      "empty": "No active handoffs",
+      "capacity": "Existing {old} / {limit} · New in flight {fresh}",
+      "phases": {
+        "observing": "Observing",
+        "paused": "Paused",
+        "retaining": "Using remaining quota",
+        "completed": "Completed",
+        "cancelled": "Cancelled"
+      }
     }
   }
 }

@@ -402,6 +402,7 @@ pub(crate) fn core_account_from_summary(
         revision,
         summary.access_token_expires_at.map(Into::into),
     )
+    .with_created_at(summary.created_at.into())
     .with_notes(summary.notes)
     .with_profile(
         summary.email,

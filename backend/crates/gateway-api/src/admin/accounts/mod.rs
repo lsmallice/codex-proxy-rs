@@ -66,6 +66,7 @@ const MAX_AVATAR_VERSION_BYTES: usize = 32;
 mod concurrency;
 mod credentials;
 mod handlers;
+mod handoff;
 mod import_tasks;
 mod presenter;
 mod upstream_info;

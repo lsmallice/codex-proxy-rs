@@ -808,6 +808,7 @@ impl AccountHistorySnapshot {
 /// 账号持久事实；代理认证信息只通过显式 secret accessor 读取
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ProviderAccount {
+    created_at: Option<SystemTime>,
     id: ProviderAccountId,
     provider: ProviderKind,
     name: String,
@@ -835,6 +836,16 @@ pub struct ProviderAccount {
 }
 
 impl ProviderAccount {
+    #[must_use]
+    pub fn with_created_at(mut self, created_at: SystemTime) -> Self {
+        self.created_at = Some(created_at);
+        self
+    }
+
+    pub const fn created_at(&self) -> Option<SystemTime> {
+        self.created_at
+    }
+
     /// 创建账号快照
     #[must_use]
     pub const fn new(
@@ -850,6 +861,7 @@ impl ProviderAccount {
             id,
             provider,
             name,
+            created_at: None,
             notes: None,
             email: None,
             upstream_user_id,

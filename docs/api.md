@@ -1135,6 +1135,7 @@ config 返回 `{ name, plaintextKey }`，仅读取服务端会话绑定的当前
 - `sortDirection`: `asc`、`desc`
 
 账号列表的 `search` 仅按字面量包含匹配名称和邮箱，不区分大小写；`%`、`_` 和 `\` 按普通字符处理
+账号管理工具栏的“刷新账号列表”按当前筛选、排序和页码重新读取列表及摘要，不执行令牌或上游额度刷新
 
 账号模型用量的 `successRate` 按同一账号、模型和用量窗口内的[服务成功率](#记录范围与统计口径)计算，
 范围为 0–100，无有效样本时为 `null`，`successRateDisplay` 显示 `—`
@@ -1144,6 +1145,7 @@ config 返回 `{ name, plaintextKey }`，仅读取服务端会话绑定的当前
 
 账号视图的 `capacity` 返回查询时的普通并发容量：`usedSlots` 不含独立审批池和排队请求，
 读取运行态失败时为 `null`。`totalSlots` 是按[并发与排队](#并发与排队)取值的本机上限，`null` 表示不限。上游独立执行其密钥限制
+交接临时上限按请求候选范围生效，不覆盖 `totalSlots`；当前交接档位在“并发交接”弹窗和交接接口中单独展示
 
 并发明细返回 `accountId`、`entries`、`total`、`page`、`pageSize` 和 `observedAt`，只统计普通并发池。每条包含 `leaseId`、`requestId`、`clientKeyId`、`clientKeyName`、`model`（入口请求模型）、`clientIp`、`startedAt`、`startedAtDisplay` 和 `occupiedMs`。占用时长从取得账号租约开始，不包含排队；缺少入口事实时相应字段为 `null`，租约仍计入总数
 
@@ -2171,6 +2173,54 @@ UA、平台参数及自动 Git 上下文版本由 [OpenAI 上游客户端身份]
 `turnMetadata` 为编码后的 JSON 字符串或 `null`。正文最多 256 KiB，请求头与独立 metadata 合计最多 256 KiB。
 响应返回处理后的三个承载值，以及 `outcomes: [{ ruleId, matches, status, reason }]`；
 状态为 `disabled`、`unmatched`、`applied` 或 `skipped`，错误不回显请求内容或表达式
+
+### 账号并发交接
+
+账号管理工具栏的“并发交接”提供自动策略、手动指定新老账号、进行中和历史分页记录与取消入口
+自动策略默认关闭，开启后覆盖所有入口新建的 OpenAI OAuth 订阅账号，包括文件、AT/RT、OAuth、后台和插件导入
+更新或重新授权已有账号保留创建时间，不重复触发；API Key 账号不自动参与
+
+| 方法 | 路径 | 请求 / 结果 |
+| --- | --- | --- |
+| GET | `/api/admin/accounts/handoffs/policy` | `enabled`、`enabledAfterMs`、`revision`、`config` |
+| POST | `/api/admin/accounts/handoffs/policy` | `{ enabled, revision, config }`，版本冲突返回 409 |
+| GET | `/api/admin/accounts/handoffs` | 当前交接的 `state` 与真实业务 `feedback` |
+| GET | `/api/admin/accounts/handoffs/records` | `view=active|history`、`page`、`pageSize`，返回分页记录 |
+| POST | `/api/admin/accounts/handoffs/start` | `{ requestId, oldAccountId, newAccountId, config? }`，同 UUID 和参数幂等 |
+| POST | `/api/admin/accounts/handoffs/cancel` | `{ id, revision }`，取消仅解除临时上限 |
+
+`config` 包含 `initialNewConcurrency`（默认 50，范围 1–10000）、`minimumOldConcurrency`（默认 50，范围 1–10000）、
+`decrement`（默认 30，范围 1–1000）、`stableSeconds`（默认 30，范围 30–3600）和 `minimumSuccesses`（默认 3，范围 1–10000）
+修改默认策略不重写已启动交接，关闭自动策略不取消现有任务
+
+自动识别在新账号进入业务候选池、首次准入前执行，仅选择当前请求授权范围内有共同分组的正常订阅账号
+新账号须在本次开启策略后创建且不超过 7 天，凭据和额度须已确认可用，模型和传输沿用原生资格检查
+没有合适老账号时保持正常调度，不制造空池；已开启前的存量账号使用手动入口
+同一账号最多参与一组交接，最多 128 组；自动去重保留 30 天，完成或取消的幂等回执保留 7 天
+
+记录查询默认 `view=active`、`page=1`、`pageSize=20`，页码必须大于零，每页 1–100 条，越界页回到当前末页
+返回 `items`、`page: {page,pageSize,total,totalPages}`、`activeTotal` 和所有进行中账号的 `occupiedAccountIds`
+分页不影响手动选择器对其他页已占用账号的禁用，历史记录不占用账号
+进行中按创建时间倒序，历史按结束时间倒序，同毫秒按记录 ID 倒序，查询不冻结跨页快照
+历史记录保留结束时的 `state`、`feedback`、`state.finishedAtMs`、最终老号上限 `state.oldLimit` 和结束原因 `state.message`
+`createdAtDisplay`、`finishedAtDisplay` 按部署时区格式化，前端不自行转换时间
+历史保留最近 7 天、最多 10000 条；接口同时返回 `historyRetentionDays`、`historyMaximumRecords`
+无历史索引的旧完成回执不回填，不将旧创建时间伪装成结束时间；长期审计应另行导出保存
+原不分页接口继续只返回全部进行中记录，供现有插件和控制流程使用
+
+初始老号上限根据新老账号当前在途总数减去新号承接目标计算，不低于保留值，不突破管理员原有有限上限
+每 5 秒评估一次，每档须有连续稳定时间和真实完整成功请求，满足后降低老号上限；降到保留值后继续消耗老号余量
+无请求、成功样本不足或观测中断不推进；上游账号失败或 429 反馈阻止旧观测推进，并在下一轮复核时恢复上一档
+保留真实冷却，不把短暂限流伪装成额度耗尽
+
+交接只限制后续普通请求准入，不中断已有请求，不停用或删除账号，也不改写账号原始并发配置
+新号保持原并发设置；“承接目标”不是新号硬上限，突发总负载仍可能超过目标
+老号耗尽、停用、删除或明确失效后结束交接，其在途请求沿原生命周期结束
+原生续接、固定账号、Guardian 独立池、管理员权重和会话亲和不被交接强行改写
+新号不在当前请求范围、模型候选或暂不可用时，不用交接上限人为阻塞老号
+
+交接状态及自动策略使用实例原 Redis 命名空间共享，进程重启保留状态，长观测空白重新累计稳定窗口
+Redis 数据丢失后自动策略回到关闭，账号原始设置不受影响；部署应保留 Redis 持久卷
 
 ### 并发与排队
 

@@ -11,6 +11,7 @@ use std::{fmt, sync::Arc};
 /// Provider 只能按能力取用端口，无法取得 Redis client 或 repository 集合
 #[derive(Clone)]
 pub struct ProviderStorePorts {
+    handoffs: Option<Arc<dyn crate::provider_ports::AccountHandoffStore>>,
     accounts: Arc<dyn ProviderAccountStore>,
     leases: Arc<dyn ProviderLeasePort>,
     session_affinity: Arc<dyn ProviderSessionAffinityPort>,
@@ -43,6 +44,7 @@ impl ProviderStorePorts {
         diagnostics: Arc<dyn crate::diagnostics::OperationalDiagnostics>,
     ) -> Self {
         Self {
+            handoffs: None,
             accounts,
             leases,
             session_affinity,
@@ -61,6 +63,19 @@ impl ProviderStorePorts {
     #[must_use]
     pub fn diagnostics(&self) -> Arc<dyn crate::diagnostics::OperationalDiagnostics> {
         self.diagnostics.clone()
+    }
+
+    #[must_use]
+    pub fn with_handoffs(
+        mut self,
+        handoffs: Arc<dyn crate::provider_ports::AccountHandoffStore>,
+    ) -> Self {
+        self.handoffs = Some(handoffs);
+        self
+    }
+
+    pub fn handoffs(&self) -> Option<Arc<dyn crate::provider_ports::AccountHandoffStore>> {
+        self.handoffs.clone()
     }
 
     #[must_use]
