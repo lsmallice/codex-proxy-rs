@@ -1,5 +1,14 @@
 {
   "forkSettings": {
+    "happyFirstToken": "快樂首字 · gateway.status.delta",
+    "happyMinDelay": "最短提示延遲",
+    "happyMaxDelay": "最長提示延遲",
+    "happyAllKeys": "套用全部 Client Key",
+    "happyKeyIds": "指定 Client Key ID",
+    "happyKeyPlaceholder": "Key ID，不是 sk- 金鑰",
+    "happyAddKey": "新增 Key ID",
+    "happyRemoveKey": "移除 {id}",
+    "happyRisk": "僅 OAuth Responses SSE，不是模型正文或用量，可能提前下游 TTFT 並阻止下游重試，指定清單為空時不啟用",
     "preconnect": "會話備用 WS 預連線",
     "preconnectTotal": "實例備用連線上限",
     "preconnectAccount": "單帳號備用連線上限",

@@ -5,6 +5,29 @@ use std::{path::Path, time::Duration};
 use provider_openai::config::{MAX_STREAM_MAX_RETRIES, OpenAiConfig};
 
 #[test]
+fn happy_first_token_defaults_and_bounds_are_validated() {
+    let mut config = valid_config();
+    assert!(!config.happy_first_token.enabled);
+    assert!(!config.happy_first_token.all_client_keys);
+    for (min, max, valid) in [
+        (0, 0, true),
+        (500, 1000, true),
+        (60000, 60000, true),
+        (100, 99, false),
+        (0, 60001, false),
+    ] {
+        config.happy_first_token.min_delay_ms = min;
+        config.happy_first_token.max_delay_ms = max;
+        assert_eq!(config.resolve_and_validate(Path::new(".")).is_ok(), valid);
+    }
+    config.happy_first_token = Default::default();
+    config.happy_first_token.client_key_ids = vec!["key_one".into(), "key_one".into()];
+    assert!(config.resolve_and_validate(Path::new(".")).is_err());
+    config.happy_first_token.client_key_ids = vec!["bad\nkey".into()];
+    assert!(config.resolve_and_validate(Path::new(".")).is_err());
+}
+
+#[test]
 fn openai_config_preserves_optional_routing_header_values() {
     for (document, expected) in [
         (r#"{}"#, (None, None)),

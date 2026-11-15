@@ -5236,6 +5236,14 @@ fn delivered_prelude_allows_retry_without_control_until_non_replayable_delivery(
             .with_replayable_prelude()
         };
         let mut items = vec![Ok(prelude())];
+        items.push(Ok(ProviderEvent::local_control(
+            ProtocolWireEvent::json(
+                "openai",
+                Some("gateway.status.delta".into()),
+                json!({"type":"gateway.status.delta","delta":"upstream_connected"}),
+            )
+            .unwrap(),
+        )));
         if close_window {
             items.push(Ok(ProviderEvent::wire(
                 ProtocolWireEvent::json(
@@ -5285,6 +5293,15 @@ fn delivered_prelude_allows_retry_without_control_until_non_replayable_delivery(
         assert_eq!(result.is_err(), close_window);
         let attempts = if close_window { 1 } else { 2 };
         assert_eq!(provider.contexts.lock().unwrap().len(), attempts);
+        let contexts = provider.contexts.lock().unwrap();
+        assert!(contexts[0].claim_stream_notification());
+        for context in contexts.iter().skip(1) {
+            assert!(
+                !context.claim_stream_notification(),
+                "retries share the request notification slot"
+            );
+        }
+        drop(contexts);
         let state = store.state.lock().unwrap();
         assert_eq!(state.commits, 1);
         assert_eq!(state.intermediate_failures, attempts - 1);

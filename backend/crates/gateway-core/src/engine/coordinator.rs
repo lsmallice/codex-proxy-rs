@@ -325,6 +325,7 @@ where
             budget_prior_attempts_usd: Decimal::ZERO,
             budget_attempt_already_counted: false,
             response_commit: super::execution::ResponseCommit::new(trace.clone()),
+            stream_notification_claimed: Arc::default(),
             trace,
             deadline,
             deadline_timer: deadline.wait().fuse(),
@@ -543,6 +544,7 @@ pub struct ResponseExecutionSession<S: ?Sized> {
     /// 请求级发送状态水位；跨 attempt 单调不降，终态写回不得低于此档
     send_state_watermark: UpstreamSendState,
     response_commit: super::execution::ResponseCommit,
+    stream_notification_claimed: Arc<std::sync::atomic::AtomicBool>,
     // 传输心跳可先于首个业务批次提交，两者不能共用重放屏障
     delivery_committed: bool,
     /// 已交付的实际输出禁止重放，可替换前导事件不跨越此屏障
@@ -954,7 +956,7 @@ where
                     return Err(EngineError::Deadline);
                 }
                 PollBoundary::Item(Some(Ok(mut event))) => {
-                    if let Some(wire) = event.wire_event() {
+                    if let Some(wire) = event.wire_event().filter(|_| !event.is_local_control()) {
                         self.trace
                             .attempt(self.attempts)
                             .wire_event(wire.protocol(), wire.event_type());
@@ -971,10 +973,16 @@ where
                     for fact in event.canonical_facts() {
                         self.observe_event(fact).await;
                     }
-                    if event.wire_event().is_some() && !event.has_canonical_facts() {
+                    if event.wire_event().is_some()
+                        && !event.has_canonical_facts()
+                        && !event.is_local_control()
+                    {
                         self.observe_wire_event().await;
                     }
-                    if self.request_observation.is_some() && event.wire_event().is_some() {
+                    if self.request_observation.is_some()
+                        && event.wire_event().is_some()
+                        && !event.is_local_control()
+                    {
                         let websocket_attempt = self
                             .current
                             .as_ref()
@@ -1151,6 +1159,7 @@ where
         }
         let context = AttemptContext::new(
             RequestAttemptContext::new(self.request_id.clone(), self.client_api_key_ref.clone())
+                .with_stream_notification_state(Arc::clone(&self.stream_notification_claimed))
                 .with_account_error_protection(
                     (!self.account_selection.is_diagnostic()
                         && self.plan.account_error_protection().policy().enabled)

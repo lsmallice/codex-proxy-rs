@@ -208,6 +208,7 @@ pub async fn initialize(
         .with_ws_opening_recovery(config.ws_opening_recovery)
         .with_ws_response_recovery(config.ws_response_recovery.clone())
         .with_request_compatibility(config.request_compatibility)
+        .with_happy_first_token(config.happy_first_token.clone())
         .with_fork_runtime(config.fork_runtime.clone())
         .with_session_identity(session_identity)
         .with_timezone(config.timezone)

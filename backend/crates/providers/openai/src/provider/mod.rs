@@ -106,6 +106,7 @@ mod encrypted_history;
 mod execution;
 mod failure;
 mod guardian;
+mod happy_first_token;
 mod live;
 mod messages;
 mod observation;
@@ -163,6 +164,7 @@ pub struct CodexProvider {
     ws_opening_recovery: crate::config::CodexWsOpeningRecovery,
     ws_response_recovery: crate::config::CodexWsResponseRecovery,
     request_compatibility: crate::config::CodexRequestCompatibility,
+    happy_first_token: crate::config::CodexHappyFirstToken,
     fork_runtime: Option<Arc<crate::OpenAiForkRuntime>>,
     response_recovery_slots: Arc<tokio::sync::Semaphore>,
     preconnect_slots: Arc<tokio::sync::Semaphore>,
@@ -387,6 +389,7 @@ impl CodexProvider {
             preconnect_loading: Arc::new(tokio::sync::Semaphore::new(8)),
             ws_response_recovery: crate::config::CodexWsResponseRecovery::default(),
             request_compatibility: crate::config::CodexRequestCompatibility::default(),
+            happy_first_token: crate::config::CodexHappyFirstToken::default(),
             fork_runtime: None,
             response_recovery_slots: Arc::new(tokio::sync::Semaphore::new(16)),
             rejected_ciphertexts: Arc::new(encrypted_history::Cache::default()),
@@ -427,6 +430,12 @@ impl CodexProvider {
 
     pub fn with_fork_runtime(mut self, runtime: Option<Arc<crate::OpenAiForkRuntime>>) -> Self {
         self.fork_runtime = runtime;
+        self
+    }
+
+    #[must_use]
+    pub fn with_happy_first_token(mut self, policy: crate::config::CodexHappyFirstToken) -> Self {
+        self.happy_first_token = policy;
         self
     }
 
@@ -671,6 +680,7 @@ impl Provider for CodexProvider {
             let mut frozen = self.as_ref().clone();
             frozen.fork_runtime = None;
             frozen.request_compatibility = policy.request_compatibility;
+            frozen.happy_first_token = policy.happy_first_token.clone();
             frozen.ws_opening_recovery = policy.ws_opening_recovery;
             frozen.ws_response_recovery = policy.ws_response_recovery.clone();
             frozen.selector = Arc::new(
@@ -1319,6 +1329,7 @@ impl CodexProvider {
                 .iter()
                 .any(|header| header.name().eq_ignore_ascii_case("x-codex-turn-state"));
         let events = cold_response_stream(ColdResponse {
+            happy_first_token: self.happy_first_token.clone(),
             installation_id,
             client: client
                 .for_account(lease.account())

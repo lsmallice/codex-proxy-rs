@@ -57,6 +57,10 @@ fn saved_fork_settings_override_yaml_on_startup_and_reject_invalid_files() {
         .as_object_mut()
         .unwrap()
         .remove("ws_preconnect");
+    saved["values"]["openai"]
+        .as_object_mut()
+        .unwrap()
+        .remove("happy_first_token");
     for field in [
         "encrypted_history",
         "encrypted_history_max_sessions",
@@ -71,6 +75,9 @@ fn saved_fork_settings_override_yaml_on_startup_and_reject_invalid_files() {
     let (loaded, _) = parse_config(&document.to_string()).unwrap();
     assert!(format!("{loaded:?}").contains("encrypted_history: false"));
     assert!(format!("{loaded:?}").contains("lite_context: false"));
+    assert!(
+        format!("{loaded:?}").contains("happy_first_token: CodexHappyFirstToken { enabled: false")
+    );
     saved["values"]["openai"]["request_compatibility"] = serde_json::json!({"lite_context":true,"store_false":true,"json_object":true,"min_output_tokens_16":true,"tool_structure":true});
     saved["values"]["openai"]["ws_response_recovery"]["encrypted_history"] =
         serde_json::json!(true);

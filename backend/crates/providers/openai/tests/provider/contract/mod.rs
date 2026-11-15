@@ -9,6 +9,7 @@ mod cookies;
 mod correlation;
 mod encrypted_history;
 mod error_details;
+mod happy_first_token;
 mod hot_settings;
 mod image_model_access;
 mod messages;

@@ -34,6 +34,9 @@ fn validate(mut value: serde_json::Value) -> Result<serde_json::Value, AdminErro
         openai.entry("ws_preconnect").or_insert_with(|| {
             serde_json::json!(provider_openai::config::CodexWsPreconnect::default())
         });
+        openai.entry("happy_first_token").or_insert_with(|| {
+            serde_json::json!(provider_openai::config::CodexHappyFirstToken::default())
+        });
     }
     if let Some(recovery) = value
         .pointer_mut("/openai/ws_response_recovery")

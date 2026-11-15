@@ -98,6 +98,13 @@ openai:
   account_routing_override: null
   # 模型不支持冷却，单位秒，0 表示不写入且忽略已有模型级冷却；范围 0-86400
   model_unsupported_cooldown_seconds: 1800
+  # 快乐首字仅发送网关状态 delta，可能改变下游 TTFT/重试，默认关闭
+  # happy_first_token:
+  #   enabled: false
+  #   all_client_keys: false
+  #   client_key_ids: [] # 本地 Key ID，不是密钥，空列表不启用任何 Key
+  #   min_delay_ms: 500
+  #   max_delay_ms: 1000 # 相等为固定延迟，范围 0-60000
   # 原生 Responses 参数兼容；独立开关，不需要请求兼容插件，不映射推理档位
   # request_compatibility:
   #   lite_context: false

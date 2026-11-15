@@ -11,6 +11,23 @@ use gateway_core::upstream::UpstreamTransport;
 use serde_json::json;
 
 #[test]
+fn local_control_marker_cannot_be_forged_by_same_named_upstream_wire() {
+    let wire = ProtocolWireEvent::json(
+        "openai",
+        Some("gateway.status.delta".into()),
+        json!({"type":"gateway.status.delta","delta":"upstream_connected"}),
+    )
+    .unwrap();
+    let upstream = ProviderEvent::wire(wire.clone());
+    let local = ProviderEvent::local_control(wire);
+    assert!(!upstream.is_local_control());
+    assert!(!upstream.is_replayable_prelude());
+    assert!(local.is_local_control());
+    assert!(local.is_replayable_prelude());
+    assert!(!local.has_canonical_facts());
+}
+
+#[test]
 fn provider_event_should_distinguish_client_delivery_from_observation() {
     let wire = ProviderEvent::wire(
         ProtocolWireEvent::json("openai", None, json!({"type": "response.created"}))

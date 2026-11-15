@@ -1,5 +1,14 @@
 {
   "forkSettings": {
+    "happyFirstToken": "First response hint · gateway.status.delta",
+    "happyMinDelay": "Minimum hint delay",
+    "happyMaxDelay": "Maximum hint delay",
+    "happyAllKeys": "Apply to all Client Keys",
+    "happyKeyIds": "Allowed Client Key IDs",
+    "happyKeyPlaceholder": "Key ID, not the sk- secret",
+    "happyAddKey": "Add Key ID",
+    "happyRemoveKey": "Remove {id}",
+    "happyRisk": "OAuth Responses SSE only, not model text or usage, may advance downstream TTFT and prevent retries, an empty allowlist enables no keys",
     "preconnect": "Session standby WS preconnections",
     "preconnectTotal": "Instance standby connection limit",
     "preconnectAccount": "Per-account standby connection limit",
