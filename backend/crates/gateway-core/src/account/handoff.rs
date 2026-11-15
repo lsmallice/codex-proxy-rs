@@ -154,6 +154,7 @@ pub struct AccountHandoffObservation {
     pub old_available: bool,
     pub new_available: bool,
     pub old_finished: bool,
+    pub new_finished: bool,
     pub old_in_flight: u32,
     pub new_in_flight: u32,
 }
@@ -222,6 +223,12 @@ impl AccountHandoff {
             self.phase = AccountHandoffPhase::Completed;
             self.stable_since_ms = None;
             self.message = "老账号已耗尽或退出可用池，交接结束".into();
+            return;
+        }
+        if observation.new_finished {
+            self.phase = AccountHandoffPhase::Cancelled;
+            self.stable_since_ms = None;
+            self.message = "新账号已退出可用池，取消交接".into();
             return;
         }
         let failed = feedback.failures != self.observed_failures;

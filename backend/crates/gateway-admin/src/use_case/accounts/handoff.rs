@@ -16,6 +16,37 @@ fn store_error(error: ProviderStoreError) -> AdminError {
     }
 }
 
+fn terminal_reason(account: Option<&AccountPageItem>) -> Option<&'static str> {
+    let Some(item) = account else {
+        return Some("已删除");
+    };
+    let account = &item.account;
+    if !account.enabled {
+        return Some("已停用");
+    }
+    // Expired 是 Provider 确认的凭据终态，不能等待旧额度快照变成耗尽才结束交接
+    match account.credential_state {
+        CredentialState::Expired => Some("凭据已过期"),
+        CredentialState::Invalid => Some("凭据已失效"),
+        CredentialState::Banned => Some("已封禁"),
+        _ if account.quota.is_exhausted() => Some("额度已耗尽"),
+        _ => None,
+    }
+}
+
+fn unavailable_reason(item: &AccountPageItem) -> &'static str {
+    match item.projection.status {
+        AccountStatus::RateLimited => "限流或保护中",
+        AccountStatus::QuotaPaused => "达到额度停调阈值",
+        AccountStatus::Error => match item.projection.error_reason {
+            Some(AccountErrorReason::AccessTokenExpired) => "访问令牌到期，等待原生刷新",
+            Some(AccountErrorReason::AccountUnverified) => "凭据待验证",
+            _ => "状态未就绪",
+        },
+        _ => "状态未就绪",
+    }
+}
+
 impl DefaultAccountsService {
     pub(super) async fn attach_handoff_capacity(&self, items: &mut [AccountDirectoryItem]) {
         let Some(store) = self.handoffs.as_ref().filter(|_| !items.is_empty()) else {
@@ -319,14 +350,8 @@ impl DefaultAccountsService {
                 .load_account(new_id.as_str(), runtime)
                 .await
                 .map_err(|e| map_store_error(e, "handoff account"))?;
-            let old_finished = old.as_ref().is_none_or(|a| {
-                !a.account.enabled
-                    || a.account.quota.is_exhausted()
-                    || matches!(
-                        a.account.credential_state,
-                        CredentialState::Invalid | CredentialState::Banned
-                    )
-            });
+            let old_terminal = terminal_reason(old.as_ref());
+            let new_terminal = terminal_reason(new.as_ref());
             let old_available = old
                 .as_ref()
                 .is_some_and(|a| a.projection.status == AccountStatus::Normal);
@@ -339,20 +364,23 @@ impl DefaultAccountsService {
                     now_ms: Utc::now().timestamp_millis() as u64,
                     old_available,
                     new_available,
-                    old_finished,
+                    old_finished: old_terminal.is_some(),
+                    new_finished: new_terminal.is_some(),
                     old_in_flight: u32::try_from(old_count).unwrap_or(u32::MAX),
                     new_in_flight: u32::try_from(new_count).unwrap_or(u32::MAX),
                 },
                 item.feedback,
             );
-            if item.state.phase == AccountHandoffPhase::Completed {
-                item.state.message = match old.as_ref() {
-                    None => "老账号已删除",
-                    Some(a) if !a.account.enabled => "老账号已停用",
-                    Some(a) if a.account.quota.is_exhausted() => "老账号额度已耗尽",
-                    Some(_) => "老账号凭据已失效或账号已封禁",
+            if let Some(reason) = old_terminal {
+                item.state.message = format!("老账号{reason}，交接结束");
+            } else if let Some(reason) = new_terminal {
+                item.state.message = format!("新账号{reason}，取消交接并解除临时上限");
+            } else if item.state.phase == AccountHandoffPhase::Paused {
+                if let Some(account) = old.as_ref().filter(|_| !old_available) {
+                    item.state.message = format!("老账号{}，暂停交接", unavailable_reason(account));
+                } else if let Some(account) = new.as_ref().filter(|_| !new_available) {
+                    item.state.message = format!("新账号{}，暂停交接", unavailable_reason(account));
                 }
-                .into();
             }
             store
                 .update(item.state, revision, item.feedback.failures)

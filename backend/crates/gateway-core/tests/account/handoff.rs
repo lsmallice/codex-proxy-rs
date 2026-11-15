@@ -26,6 +26,7 @@ fn observe(state: &mut AccountHandoff, now: u64, successes: u64, failures: u64, 
             old_available: true,
             new_available: true,
             old_finished: false,
+            new_finished: false,
             old_in_flight: 50,
             new_in_flight: active,
         },
@@ -68,12 +69,80 @@ fn handoff_reduces_by_thirty_and_retains_fifty_until_exhausted() {
             old_available: false,
             new_available: true,
             old_finished: true,
+            new_finished: false,
             old_in_flight: 12,
             new_in_flight: 100,
         },
         AccountHandoffFeedback::default(),
     );
     assert_eq!(s.phase, AccountHandoffPhase::Completed);
+}
+
+#[test]
+fn handoff_terminal_accounts_exit_paused_state_without_requiring_new_quota_or_traffic() {
+    for (old_finished, new_finished, expected) in [
+        (true, false, AccountHandoffPhase::Completed),
+        (false, true, AccountHandoffPhase::Cancelled),
+        (true, true, AccountHandoffPhase::Completed),
+    ] {
+        let mut s = handoff(150);
+        observe(&mut s, 6000, 0, 1, 0);
+        assert_eq!(s.phase, AccountHandoffPhase::Paused);
+        let limit = s.old_limit;
+        s.advance(
+            AccountHandoffObservation {
+                now_ms: 11000,
+                old_available: false,
+                new_available: false,
+                old_finished,
+                new_finished,
+                old_in_flight: 3,
+                new_in_flight: 2,
+            },
+            AccountHandoffFeedback::default(),
+        );
+        assert_eq!(s.phase, expected);
+        assert!(!s.phase.active());
+        assert_eq!(s.old_limit, limit);
+        assert_eq!((s.old_in_flight, s.new_in_flight), (3, 2));
+        assert_eq!(s.stable_since_ms, None);
+    }
+}
+
+#[test]
+fn handoff_temporary_unavailability_resumes_with_a_fresh_observation_window() {
+    for old_unavailable in [true, false] {
+        let mut s = handoff(150);
+        observe(&mut s, 6000, 1, 0, 50);
+        s.advance(
+            AccountHandoffObservation {
+                now_ms: 11000,
+                old_available: !old_unavailable,
+                new_available: old_unavailable,
+                old_finished: false,
+                new_finished: false,
+                old_in_flight: 0,
+                new_in_flight: 0,
+            },
+            AccountHandoffFeedback {
+                successes: 10,
+                last_success_at_ms: 10000,
+                ..Default::default()
+            },
+        );
+        assert_eq!(s.phase, AccountHandoffPhase::Paused);
+        assert!(s.phase.active());
+        assert_eq!(s.old_limit, 150);
+        observe(&mut s, 16000, 11, 0, 50);
+        assert_eq!(s.phase, AccountHandoffPhase::Observing);
+        assert_eq!(s.stable_since_ms, Some(16000));
+        for now in (21000..=41000).step_by(5000) {
+            observe(&mut s, now, 20, 0, 50);
+        }
+        assert_eq!(s.old_limit, 150);
+        observe(&mut s, 46000, 21, 0, 50);
+        assert_eq!(s.old_limit, 120);
+    }
 }
 
 #[test]
