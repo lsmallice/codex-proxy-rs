@@ -50,6 +50,290 @@ fn state() -> AccountHandoff {
 }
 
 #[tokio::test]
+async fn handoff_group_redis_join_cas_and_shared_cap_survive_restarts() {
+    use gateway_store::redis::{
+        CredentialBoundedLeaseAcquisition, CredentialBoundedLeaseRequest, CredentialLeaseScope,
+        RedisCredentialLeaseRepository,
+    };
+    let Some((store, connection, namespace)) = store_connection().await else {
+        return;
+    };
+    let member = |id: &str, baseline, ceiling, remaining| TransferMember {
+        id: id.into(),
+        name: id.into(),
+        baseline,
+        ceiling,
+        remaining_basis_points: Some(remaining),
+        remaining_seconds: None,
+        limit: 0,
+        in_flight: baseline,
+        available: true,
+        terminal: false,
+    };
+    let mut g = AccountTransferGroup {
+        id: Uuid::new_v4().to_string(),
+        group_id: "grp_pool".into(),
+        automatic: false,
+        policy_revision: 0,
+        revision: 0,
+        config: AccountHandoffConfig {
+            transfer_group: Some(Default::default()),
+            new_account_protection: Some(Default::default()),
+            ..Default::default()
+        },
+        created_at_ms: 1,
+        checked_at_ms: 1,
+        old: vec![
+            member("acct_o1", 120, 200, 1700),
+            member("acct_o2", 100, 200, 3700),
+        ],
+        new: vec![member("acct_n1", 0, 50, 9000)],
+        budget: 50,
+        previous_budget: 0,
+        stable_since_ms: None,
+        observed_successes: 0,
+        observed_failures: 0,
+        finished: false,
+        message: String::new(),
+    };
+    g.rebalance();
+    assert!(store.save_transfer_group(g.clone(), 0, 0).await.unwrap());
+    assert_eq!(store.warmups().await.unwrap().len(), 1);
+    let mut duplicate = g.clone();
+    duplicate.id = Uuid::new_v4().to_string();
+    assert!(!store.save_transfer_group(duplicate, 0, 0).await.unwrap());
+    g = store.transfer_groups().await.unwrap().remove(0).state;
+    let repo = RedisCredentialLeaseRepository::new(connection.clone(), &namespace).unwrap();
+    let mut previous_guards = Vec::new();
+    for _ in 0..50 {
+        let acquired = repo
+            .try_acquire_bounded_lease_with_metadata(
+                &CredentialBoundedLeaseRequest {
+                    scope: CredentialLeaseScope::ProviderAccount,
+                    resource_id: "acct_n1".into(),
+                    owner_id: Uuid::new_v4().to_string(),
+                    max_concurrent: 0,
+                    ttl: Duration::from_secs(60),
+                },
+                None,
+            )
+            .await
+            .unwrap();
+        if let CredentialBoundedLeaseAcquisition::Acquired(guard) = acquired {
+            previous_guards.push(guard)
+        } else {
+            panic!("initial capacity missing")
+        }
+    }
+    g.new.push(member("acct_n2", 0, 50, 9000));
+    g.rebalance();
+    assert!(store.save_transfer_group(g.clone(), 1, 0).await.unwrap());
+    assert!(matches!(
+        repo.try_acquire_bounded_lease_with_metadata(
+            &CredentialBoundedLeaseRequest {
+                scope: CredentialLeaseScope::ProviderAccount,
+                resource_id: "acct_n2".into(),
+                owner_id: Uuid::new_v4().to_string(),
+                max_concurrent: 0,
+                ttl: Duration::from_secs(60)
+            },
+            None
+        )
+        .await
+        .unwrap(),
+        CredentialBoundedLeaseAcquisition::Busy { .. }
+    ));
+    for guard in previous_guards {
+        guard.release().await.unwrap();
+    }
+    let mut guards = vec![];
+    for id in ["acct_n1", "acct_n2"] {
+        let results = futures::future::join_all((0..80).map(|_| async {
+            repo.try_acquire_bounded_lease_with_metadata(
+                &CredentialBoundedLeaseRequest {
+                    scope: CredentialLeaseScope::ProviderAccount,
+                    resource_id: id.into(),
+                    owner_id: Uuid::new_v4().to_string(),
+                    max_concurrent: 0,
+                    ttl: Duration::from_secs(60),
+                },
+                None,
+            )
+            .await
+        }))
+        .await;
+        let mut n = 0;
+        for r in results {
+            if let CredentialBoundedLeaseAcquisition::Acquired(guard) = r.unwrap() {
+                n += 1;
+                guards.push(guard)
+            }
+        }
+        assert_eq!(n, 25);
+    }
+    store.feedback("acct_n1".into(), false, None).await.unwrap();
+    g.revision = 2;
+    assert!(!store.save_transfer_group(g.clone(), 2, 0).await.unwrap());
+    let recreated = RedisAccountHandoffStore::new(connection, &namespace).unwrap();
+    let snapshot = recreated.transfer_groups().await.unwrap().remove(0);
+    assert_eq!(snapshot.feedback.failures, 1);
+    assert_eq!(snapshot.state.new.len(), 2);
+    let mut retry = snapshot.state.clone();
+    let mut finished = snapshot.state;
+    finished.finished = true;
+    assert!(recreated.save_transfer_group(finished, 2, 1).await.unwrap());
+    assert!(recreated.transfer_groups().await.unwrap().is_empty());
+    assert_eq!(recreated.warmups().await.unwrap().len(), 2);
+    let ids = retry
+        .new
+        .iter()
+        .map(|m| ProviderAccountId::new(m.id.clone()).unwrap())
+        .collect::<Vec<_>>();
+    assert_eq!(recreated.handled(&ids).await.unwrap().len(), 2);
+    assert!(
+        recreated
+            .save_policy(
+                AccountHandoffPolicy {
+                    enabled: true,
+                    revision: 1,
+                    config: retry.config.clone(),
+                    ..Default::default()
+                },
+                0
+            )
+            .await
+            .unwrap()
+    );
+    retry.id = Uuid::new_v4().to_string();
+    retry.revision = 0;
+    retry.automatic = true;
+    retry.policy_revision = 1;
+    // 即使调用方仍使用取消前的候选快照，原子回执也禁止自动重建
+    assert!(
+        !recreated
+            .save_transfer_group(retry.clone(), 0, 0)
+            .await
+            .unwrap()
+    );
+    retry.automatic = false;
+    assert!(
+        recreated
+            .save_transfer_group(retry.clone(), 0, 0)
+            .await
+            .unwrap()
+    );
+    retry.finished = true;
+    assert!(recreated.save_transfer_group(retry, 1, 0).await.unwrap());
+    for guard in guards {
+        guard.release().await.unwrap();
+    }
+}
+
+#[tokio::test]
+async fn handoff_warmup_caps_stale_unlimited_leases_and_survives_old_completion() {
+    use gateway_store::redis::{
+        CredentialBoundedLeaseAcquisition, CredentialBoundedLeaseRequest, CredentialLeaseScope,
+        RedisCredentialLeaseRepository,
+    };
+    let Some((store, connection, namespace)) = store_connection().await else {
+        return;
+    };
+    let policy = AccountHandoffPolicy {
+        enabled: true,
+        revision: 1,
+        config: AccountHandoffConfig {
+            new_account_protection: Some(AccountWarmupConfig::default()),
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+    assert!(store.save_policy(policy, 0).await.unwrap());
+    let start = state();
+    store.start(start.clone()).await.unwrap();
+    for id in ["acct_new", "acct_other"] {
+        store
+            .start_warmup(AccountWarmup::new(
+                id.into(),
+                id.into(),
+                AccountWarmupConfig::default(),
+                1,
+                start.created_at_ms,
+            ))
+            .await
+            .unwrap();
+    }
+    let repo = RedisCredentialLeaseRepository::new(connection.clone(), &namespace).unwrap();
+    let mut guards = vec![];
+    for id in ["acct_new", "acct_other"] {
+        let results = futures::future::join_all((0..150).map(|_| async {
+            repo.try_acquire_bounded_lease_with_metadata(
+                &CredentialBoundedLeaseRequest {
+                    scope: CredentialLeaseScope::ProviderAccount,
+                    resource_id: id.into(),
+                    owner_id: Uuid::new_v4().to_string(),
+                    max_concurrent: 0,
+                    ttl: Duration::from_secs(60),
+                },
+                None,
+            )
+            .await
+        }))
+        .await;
+        let mut admitted = 0;
+        for result in results {
+            if let CredentialBoundedLeaseAcquisition::Acquired(guard) = result.unwrap() {
+                guards.push(guard);
+                admitted += 1;
+            }
+        }
+        assert_eq!(admitted, 50);
+    }
+    let mut finished = start;
+    finished.phase = AccountHandoffPhase::Completed;
+    assert!(store.update(finished, 1, 0).await.unwrap());
+    let recreated = RedisAccountHandoffStore::new(connection, &namespace).unwrap();
+    assert_eq!(recreated.warmups().await.unwrap().len(), 2);
+    let snapshot = recreated
+        .warmups()
+        .await
+        .unwrap()
+        .into_iter()
+        .find(|x| x.state.account_id == "acct_new")
+        .unwrap();
+    recreated
+        .feedback("acct_new".into(), false, None)
+        .await
+        .unwrap();
+    let mut next = snapshot.state.clone();
+    next.limit = 80;
+    assert!(!recreated.update_warmup(next, 0).await.unwrap());
+    assert_eq!(
+        recreated
+            .warmup_limits(&[ProviderAccountId::new("acct_new").unwrap()])
+            .await
+            .unwrap()
+            .values()
+            .next(),
+        Some(&Some(50))
+    );
+    let mut final_state = snapshot.state;
+    final_state.finished = true;
+    assert!(recreated.update_warmup(final_state, 1).await.unwrap());
+    assert_eq!(
+        recreated
+            .warmup_limits(&[ProviderAccountId::new("acct_new").unwrap()])
+            .await
+            .unwrap()
+            .values()
+            .next(),
+        Some(&None)
+    );
+    for guard in guards {
+        guard.release().await.unwrap();
+    }
+}
+
+#[tokio::test]
 async fn handoff_start_is_idempotent_and_accounts_cannot_join_overlapping_pairs() {
     let Some(store) = stores().await else {
         return;

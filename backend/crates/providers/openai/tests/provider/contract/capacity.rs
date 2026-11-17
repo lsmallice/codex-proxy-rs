@@ -6,6 +6,187 @@ use gateway_core::concurrency::ConcurrencyQueuePolicy;
 
 use super::*;
 
+#[derive(Default)]
+struct DispatchProbe {
+    blocked: std::sync::atomic::AtomicBool,
+    unavailable: Mutex<BTreeSet<String>>,
+    starts: Mutex<Vec<String>>,
+}
+impl gateway_core::provider_ports::AccountDispatchStore for DispatchProbe {
+    fn ready<'a>(
+        &'a self,
+        account: &'a ProviderAccountId,
+        _: gateway_core::account::AccountTrafficPolicy,
+    ) -> BoxFuture<'a, Result<bool, gateway_core::provider_ports::ProviderStoreError>> {
+        Box::pin(async move { Ok(!self.unavailable.lock().unwrap().contains(account.as_str())) })
+    }
+    fn try_start<'a>(
+        &'a self,
+        account: &'a ProviderAccountId,
+        _: gateway_core::account::AccountTrafficPolicy,
+    ) -> BoxFuture<'a, Result<Duration, gateway_core::provider_ports::ProviderStoreError>> {
+        Box::pin(async move {
+            if self.blocked.load(Ordering::SeqCst) {
+                return Ok(Duration::from_millis(10));
+            }
+            self.starts.lock().unwrap().push(account.as_str().into());
+            Ok(Duration::ZERO)
+        })
+    }
+}
+
+#[tokio::test]
+async fn dispatch_selection_uses_other_eligible_account_when_preferred_bucket_is_empty() {
+    use gateway_core::{
+        account::{AccountTrafficPolicy, AccountTrafficRuntime},
+        provider_ports::AccountDispatchLimiter,
+    };
+    let accounts = Arc::new(MemoryAccountStore::default());
+    create_account(&accounts, "acct_subagent_a").await;
+    create_account(&accounts, "acct_subagent_b").await;
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/codex/responses"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("content-type", "text/event-stream")
+                .set_body_string(CAPTURE_COMPLETED_SSE),
+        )
+        .expect(1)
+        .mount(&server)
+        .await;
+    let dispatch = Arc::new(DispatchProbe::default());
+    dispatch
+        .unavailable
+        .lock()
+        .unwrap()
+        .insert("acct_subagent_a".into());
+    let runtime = Arc::new(AccountTrafficRuntime::default());
+    runtime.publish(AccountTrafficPolicy {
+        enabled: true,
+        ..Default::default()
+    });
+    let provider = Arc::new(
+        Arc::try_unwrap(provider_with_base_url(&accounts, server.uri()))
+            .ok()
+            .unwrap()
+            .with_dispatch_limiter(Arc::new(AccountDispatchLimiter::new(
+                dispatch.clone(),
+                runtime,
+            ))),
+    );
+    let (_, error) = super::response_recovery::collect(
+        provider,
+        http_generate_operation(),
+        context("req_traffic_alternate", CancellationToken::new()),
+    )
+    .await;
+    assert!(error.is_none(), "{error:?}");
+    assert_eq!(*dispatch.starts.lock().unwrap(), vec!["acct_subagent_b"]);
+    server.verify().await;
+}
+
+#[tokio::test]
+async fn dispatch_gate_limits_each_http_and_websocket_send_without_touching_account_concurrency() {
+    use gateway_core::{
+        account::{AccountTrafficPolicy, AccountTrafficRuntime},
+        provider_ports::AccountDispatchLimiter,
+    };
+    for websocket in [false, true] {
+        let accounts = Arc::new(MemoryAccountStore::default());
+        create_account(&accounts, "acct_provider_contract").await;
+        let dispatch = Arc::new(DispatchProbe::default());
+        let runtime = Arc::new(AccountTrafficRuntime::default());
+        runtime.publish(AccountTrafficPolicy {
+            enabled: true,
+            ..Default::default()
+        });
+        let limiter = Arc::new(AccountDispatchLimiter::new(dispatch.clone(), runtime));
+        let received = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let (base, server) = if websocket {
+            let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let base = format!("http://{}", listener.local_addr().unwrap());
+            let received = received.clone();
+            let task = tokio::spawn(async move {
+                for _ in 0..2 {
+                    let (socket, _) = listener.accept().await.unwrap();
+                    let mut ws = accept_codex_test_websocket(socket).await;
+                    ws.next().await.unwrap().unwrap();
+                    received.fetch_add(1, Ordering::SeqCst);
+                    ws.send(Message::Text(
+                        super::response_recovery::completed("resp_paced")
+                            .to_string()
+                            .into(),
+                    ))
+                    .await
+                    .unwrap();
+                    ws.close(None).await.ok();
+                }
+            });
+            (base, Some(task))
+        } else {
+            let server = MockServer::start().await;
+            let received = received.clone();
+            Mock::given(method("POST"))
+                .and(path("/codex/responses"))
+                .respond_with(move |_: &wiremock::Request| {
+                    received.fetch_add(1, Ordering::SeqCst);
+                    ResponseTemplate::new(200)
+                        .insert_header("content-type", "text/event-stream")
+                        .set_body_string(CAPTURE_COMPLETED_SSE)
+                })
+                .mount(&server)
+                .await;
+            let base = server.uri();
+            let task = tokio::spawn(async move {
+                tokio::time::sleep(Duration::from_secs(30)).await;
+                drop(server)
+            });
+            (base, Some(task))
+        };
+        let provider = Arc::new(
+            Arc::try_unwrap(provider_with_base_url(&accounts, base))
+                .ok()
+                .unwrap()
+                .with_dispatch_limiter(limiter),
+        );
+        for n in 0..2 {
+            dispatch.blocked.store(true, Ordering::SeqCst);
+            let provider = provider.clone();
+            let op = if websocket {
+                generate_operation()
+            } else {
+                http_generate_operation()
+            };
+            let task = tokio::spawn(async move {
+                super::response_recovery::collect(
+                    provider,
+                    op,
+                    context("req_dispatch", CancellationToken::new()),
+                )
+                .await
+            });
+            tokio::time::sleep(Duration::from_millis(100)).await;
+            assert_eq!(received.load(Ordering::SeqCst), n);
+            dispatch.blocked.store(false, Ordering::SeqCst);
+            let (_, error) = timeout(Duration::from_secs(5), task)
+                .await
+                .unwrap()
+                .unwrap();
+            assert!(error.is_none(), "{error:?}");
+            assert_eq!(received.load(Ordering::SeqCst), n + 1);
+        }
+        assert_eq!(
+            *dispatch.starts.lock().unwrap(),
+            vec!["acct_provider_contract", "acct_provider_contract"]
+        );
+        if let Some(server) = server {
+            server.abort();
+            let _ = server.await;
+        }
+    }
+}
+
 fn queued_context(request_id: &str) -> AttemptContext {
     AttemptContext::new(
         RequestAttemptContext::new(

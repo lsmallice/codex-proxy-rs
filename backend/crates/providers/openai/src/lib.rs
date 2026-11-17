@@ -209,6 +209,7 @@ pub async fn initialize(
         .with_ws_response_recovery(config.ws_response_recovery.clone())
         .with_request_compatibility(config.request_compatibility)
         .with_fork_runtime(config.fork_runtime.clone())
+        .with_dispatch_limiter(ports.dispatch_limiter())
         .with_session_identity(session_identity)
         .with_timezone(config.timezone)
         .with_live_support(repository.clone()),

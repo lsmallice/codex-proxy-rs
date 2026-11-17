@@ -17,6 +17,7 @@ use super::namespace;
 use crate::StoreResult;
 
 const START: &str = r#"
+if redis.call('HEXISTS',KEYS[1],'transfer-owner:'..ARGV[2])==1 or redis.call('HEXISTS',KEYS[1],'transfer-owner:'..ARGV[3])==1 then return '' end
 if ARGV[8] == '1' then
  local policy = redis.call('HGET', KEYS[1], 'policy')
  if not policy then return '' end
@@ -33,12 +34,18 @@ if redis.call('HEXISTS', KEYS[1], 'old:' .. ARGV[2]) == 1 or
    redis.call('HEXISTS', KEYS[1], 'old:' .. ARGV[3]) == 1 or
    redis.call('HEXISTS', KEYS[1], 'new:' .. ARGV[3]) == 1 then return '' end
 if tonumber(redis.call('HGET', KEYS[1], 'count') or '0') >= tonumber(ARGV[6]) then return '' end
+local start_warmup = ARGV[10] ~= '' and redis.call('HEXISTS', KEYS[1], 'warmup:' .. ARGV[3]) == 0 and redis.call('EXISTS', KEYS[4]) == 0
+if start_warmup and tonumber(redis.call('HGET', KEYS[1], 'warmup-count') or '0') >= 128 then return '' end
 redis.call('HSET', KEYS[1], 'state:' .. ARGV[1], ARGV[4],
  'old:' .. ARGV[2], ARGV[1], 'new:' .. ARGV[3], ARGV[1],
  'capacity:' .. ARGV[2], ARGV[5], 'revision:' .. ARGV[1], '1',
  'limit:' .. ARGV[2], ARGV[7])
 redis.call('HINCRBY', KEYS[1], 'count', 1)
 redis.call('SET', KEYS[3], ARGV[1], 'EX', 2592000)
+if start_warmup then
+ redis.call('HSET', KEYS[1], 'warmup:' .. ARGV[3], ARGV[10])
+ redis.call('HINCRBY', KEYS[1], 'warmup-count', 1)
+end
 return ARGV[4]
 "#;
 
@@ -108,6 +115,33 @@ return {total, page, items}
 "#;
 
 const FEEDBACK: &str = r#"
+local group=redis.call('HGET',KEYS[1],'transfer-new:'..ARGV[1])
+if group then
+ local state=cjson.decode(redis.call('HGET',KEYS[1],'transfer-group:'..group))
+ local clock=redis.call('TIME')
+ local now=tonumber(clock[1])*1000+math.floor(tonumber(clock[2])/1000)
+ if ARGV[2]~='1' then
+  redis.call('HINCRBY',KEYS[1],'transfer-failures:'..group,1)
+  redis.call('HSET',KEYS[1],'transfer-failure_at:'..group,tostring(now))
+ elseif tonumber(ARGV[3])>=state.createdAtMs then
+  redis.call('HINCRBY',KEYS[1],'transfer-successes:'..group,1)
+  redis.call('HSET',KEYS[1],'transfer-success_at:'..group,tostring(now))
+ end
+end
+local warm = redis.call('HGET', KEYS[1], 'warmup:' .. ARGV[1])
+if warm then
+ local value = cjson.decode(warm)
+ local clock = redis.call('TIME')
+ local now = tonumber(clock[1]) * 1000 + math.floor(tonumber(clock[2]) / 1000)
+ if ARGV[2] == '1' and tonumber(ARGV[3]) >= value.state.startedAtMs then
+  value.feedback.successes = value.feedback.successes + 1
+  value.feedback.lastSuccessAtMs = now
+ elseif ARGV[2] ~= '1' then
+  value.feedback.failures = value.feedback.failures + 1
+  value.feedback.lastFailureAtMs = now
+ end
+ redis.call('HSET', KEYS[1], 'warmup:' .. ARGV[1], cjson.encode(value))
+end
 local id = redis.call('HGET', KEYS[1], 'new:' .. ARGV[1])
 if not id then return 0 end
 if ARGV[2] == '1' then
@@ -128,8 +162,8 @@ return 1
 
 #[derive(Clone)]
 pub struct RedisAccountHandoffStore {
-    connection: ConnectionManager,
-    key: String,
+    pub(super) connection: ConnectionManager,
+    pub(super) key: String,
 }
 
 pub(super) fn handoff_key(namespace: &str) -> String {
@@ -145,6 +179,49 @@ fn encode(value: &impl serde::Serialize) -> Result<String, ProviderStoreError> {
 }
 
 impl RedisAccountHandoffStore {
+    pub(super) fn warmup_receipt(&self, id: &str) -> Result<String, ProviderStoreError> {
+        let fingerprint =
+            super::resource_fingerprint("warmup account", id).map_err(|_| invalid())?;
+        Ok(format!("{}:warmup-done:{fingerprint}", self.key))
+    }
+    pub async fn warmup_limits(
+        &self,
+        ids: &[ProviderAccountId],
+    ) -> Result<BTreeMap<ProviderAccountId, Option<u32>>, ProviderStoreError> {
+        if ids.is_empty() {
+            return Ok(BTreeMap::new());
+        }
+        let fields: Vec<_> = ids
+            .iter()
+            .map(|id| format!("warmup:{}", id.as_str()))
+            .collect();
+        let active: Vec<Option<String>> = redis::cmd("HMGET")
+            .arg(&self.key)
+            .arg(fields)
+            .query_async(&mut self.connection.clone())
+            .await
+            .map_err(|e| crate::provider_unavailable("read warmup limits", e))?;
+        let keys = ids
+            .iter()
+            .map(|id| self.warmup_receipt(id.as_str()))
+            .collect::<Result<Vec<_>, _>>()?;
+        let done: Vec<Option<String>> = redis::cmd("MGET")
+            .arg(keys)
+            .query_async(&mut self.connection.clone())
+            .await
+            .map_err(|e| crate::provider_unavailable("read warmup receipts", e))?;
+        let mut result = BTreeMap::new();
+        for ((id, active), done) in ids.iter().zip(active).zip(done) {
+            if let Some(raw) = active {
+                let value: gateway_core::account::AccountWarmupSnapshot =
+                    serde_json::from_str(&raw).map_err(|_| invalid())?;
+                result.insert(id.clone(), Some(value.state.limit));
+            } else if done.is_some() {
+                result.insert(id.clone(), None);
+            }
+        }
+        Ok(result)
+    }
     pub fn new(connection: ConnectionManager, key_namespace: &str) -> StoreResult<Self> {
         Ok(Self {
             connection,
@@ -157,7 +234,7 @@ impl RedisAccountHandoffStore {
         Ok(format!("{}:receipt:{id}", self.key))
     }
 
-    fn handled_key(&self, id: &str) -> Result<String, ProviderStoreError> {
+    pub(super) fn handled_key(&self, id: &str) -> Result<String, ProviderStoreError> {
         let fingerprint =
             super::resource_fingerprint("handoff account", id).map_err(|_| invalid())?;
         Ok(format!("{}:handled:{fingerprint}", self.key))
@@ -219,6 +296,107 @@ impl RedisAccountHandoffStore {
 }
 
 impl AccountHandoffStore for RedisAccountHandoffStore {
+    fn transfer_samples(
+        &self,
+        samples: Vec<gateway_core::account::TransferQuotaSample>,
+    ) -> BoxFuture<
+        '_,
+        Result<
+            BTreeMap<String, Vec<gateway_core::account::TransferQuotaSample>>,
+            ProviderStoreError,
+        >,
+    > {
+        Box::pin(super::account_transfer::samples(self, samples))
+    }
+    fn transfer_groups(
+        &self,
+    ) -> BoxFuture<
+        '_,
+        Result<Vec<gateway_core::account::AccountTransferSnapshot>, ProviderStoreError>,
+    > {
+        Box::pin(super::account_transfer::list(self))
+    }
+    fn save_transfer_group(
+        &self,
+        state: gateway_core::account::AccountTransferGroup,
+        revision: u64,
+        failures: u64,
+    ) -> BoxFuture<'_, Result<bool, ProviderStoreError>> {
+        Box::pin(super::account_transfer::save(
+            self, state, revision, failures,
+        ))
+    }
+    fn warmups(
+        &self,
+    ) -> BoxFuture<'_, Result<Vec<gateway_core::account::AccountWarmupSnapshot>, ProviderStoreError>>
+    {
+        Box::pin(async move {
+            let rows: BTreeMap<String, String> =
+                self.connection
+                    .clone()
+                    .hgetall(&self.key)
+                    .await
+                    .map_err(|e| crate::provider_unavailable("read warmups", e))?;
+            rows.into_iter()
+                .filter(|(k, _)| k.starts_with("warmup:"))
+                .map(|(_, value)| serde_json::from_str(&value).map_err(|_| invalid()))
+                .collect()
+        })
+    }
+    fn start_warmup(
+        &self,
+        state: gateway_core::account::AccountWarmup,
+    ) -> BoxFuture<'_, Result<(), ProviderStoreError>> {
+        Box::pin(async move {
+            state.config.validate().map_err(|_| invalid())?;
+            let value = gateway_core::account::AccountWarmupSnapshot {
+                state: state.clone(),
+                feedback: Default::default(),
+            };
+            let result: i64 = Script::new(r#"
+if redis.call('HEXISTS', KEYS[1], ARGV[1]) == 1 or redis.call('EXISTS', KEYS[2]) == 1 then return 1 end
+local policy = redis.call('HGET', KEYS[1], 'policy')
+if not policy then return 0 end
+local p = cjson.decode(policy)
+if not p.enabled or p.revision ~= tonumber(ARGV[3]) or p.config.newAccountProtection == nil or p.config.newAccountProtection == cjson.null then return 0 end
+if tonumber(redis.call('HGET', KEYS[1], 'warmup-count') or '0') >= 128 then return 0 end
+redis.call('HSET', KEYS[1], ARGV[1], ARGV[2])
+redis.call('HINCRBY', KEYS[1], 'warmup-count', 1)
+return 1
+"#).key(&self.key).key(self.warmup_receipt(&state.account_id)?).arg(format!("warmup:{}", state.account_id)).arg(encode(&value)?).arg(state.policy_revision).invoke_async(&mut self.connection.clone()).await.map_err(|e| crate::provider_unavailable("start warmup", e))?;
+            if result != 1 {
+                return Err(ProviderStoreError::new(
+                    ProviderStoreErrorKind::Conflict,
+                    "warmup policy or capacity changed",
+                ));
+            }
+            Ok(())
+        })
+    }
+    fn update_warmup(
+        &self,
+        mut state: gateway_core::account::AccountWarmup,
+        expected_failures: u64,
+    ) -> BoxFuture<'_, Result<bool, ProviderStoreError>> {
+        Box::pin(async move {
+            let revision = state.revision;
+            state.revision = revision.checked_add(1).ok_or_else(invalid)?;
+            let result: i64 = Script::new(r#"
+local raw = redis.call('HGET', KEYS[1], ARGV[1])
+if not raw then return 0 end
+local value = cjson.decode(raw)
+if value.state.revision ~= tonumber(ARGV[2]) or value.feedback.failures ~= tonumber(ARGV[3]) then return 0 end
+value.state = cjson.decode(ARGV[4])
+if value.state.finished then
+ redis.call('HDEL', KEYS[1], ARGV[1])
+ redis.call('HINCRBY', KEYS[1], 'warmup-count', -1)
+ redis.call('SET', KEYS[2], '1', 'EX', 2592000)
+else redis.call('HSET', KEYS[1], ARGV[1], cjson.encode(value)) end
+return 1
+"#).key(&self.key).key(self.warmup_receipt(&state.account_id)?).arg(format!("warmup:{}", state.account_id)).arg(revision).arg(expected_failures).arg(encode(&state)?).invoke_async(&mut self.connection.clone()).await.map_err(|e| crate::provider_unavailable("update warmup", e))?;
+            Ok(result == 1)
+        })
+    }
     fn history(
         &self,
         page: u32,
@@ -361,6 +539,24 @@ return 1
         state: AccountHandoff,
     ) -> BoxFuture<'_, Result<AccountHandoffSnapshot, ProviderStoreError>> {
         Box::pin(async move {
+            let warmup = state
+                .config
+                .new_account_protection
+                .as_ref()
+                .map(|config| {
+                    encode(&gateway_core::account::AccountWarmupSnapshot {
+                        state: gateway_core::account::AccountWarmup::new(
+                            state.new_account_id.clone(),
+                            state.new_account_name.clone(),
+                            config.clone(),
+                            state.automatic_policy_revision,
+                            state.created_at_ms,
+                        ),
+                        feedback: Default::default(),
+                    })
+                })
+                .transpose()?
+                .unwrap_or_default();
             let capacity = AccountHandoffCapacity {
                 id: state.id.clone(),
                 new_account_id: state.new_account_id.clone(),
@@ -370,6 +566,7 @@ return 1
                 .key(&self.key)
                 .key(self.receipt_key(&state.id)?)
                 .key(self.handled_key(&state.new_account_id)?)
+                .key(self.warmup_receipt(&state.new_account_id)?)
                 .arg(&state.id)
                 .arg(&state.old_account_id)
                 .arg(&state.new_account_id)
@@ -379,6 +576,7 @@ return 1
                 .arg(state.old_limit)
                 .arg(u8::from(state.automatic))
                 .arg(state.automatic_policy_revision)
+                .arg(warmup)
                 .invoke_async(&mut self.connection.clone())
                 .await
                 .map_err(|e| crate::provider_unavailable("start account handoff", e))?;

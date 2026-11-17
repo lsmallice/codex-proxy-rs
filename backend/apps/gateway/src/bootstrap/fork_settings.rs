@@ -11,10 +11,16 @@ use std::sync::Arc;
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Values {
+    account_traffic: gateway_core::account::AccountTrafficPolicy,
     openai: provider_openai::OpenAiForkSettings,
     plugins: gateway_plugin_runtime::PluginStartupConfig,
 }
 fn validate(mut value: serde_json::Value) -> Result<serde_json::Value, AdminError> {
+    if let Some(values) = value.as_object_mut() {
+        values.entry("account_traffic").or_insert_with(|| {
+            serde_json::json!(gateway_core::account::AccountTrafficPolicy::default())
+        });
+    }
     // 已保存配置只补新增安全默认值，其他缺失或未知字段仍严格拒绝
     if let Some(plugins) = value
         .get_mut("plugins")
@@ -52,6 +58,10 @@ fn validate(mut value: serde_json::Value) -> Result<serde_json::Value, AdminErro
     let parsed: Values = serde_json::from_value(value.clone())
         .map_err(|_| AdminError::invalid("二开配置字段格式无效"))?;
     parsed
+        .account_traffic
+        .validate()
+        .map_err(AdminError::invalid)?;
+    parsed
         .openai
         .clone()
         .apply(&mut provider_openai::OpenAiConfig::default())
@@ -72,6 +82,7 @@ fn validate(mut value: serde_json::Value) -> Result<serde_json::Value, AdminErro
 pub(super) fn initialize(config: &mut GatewayConfig) -> Result<(), ConfigError> {
     let path = config.host.runtime_data_dir().join("fork-settings.json");
     let baseline = serde_json::to_value(Values {
+        account_traffic: config.account_traffic,
         openai: (&config.openai).into(),
         plugins: config.plugins.clone(),
     })
@@ -87,6 +98,9 @@ pub(super) fn initialize(config: &mut GatewayConfig) -> Result<(), ConfigError> 
         .apply(&mut config.openai)
         .map_err(|_| ConfigError::InvalidField("fork-settings.json"))?;
     config.plugins = values.plugins;
+    config.account_traffic = values.account_traffic;
+    config.traffic_runtime.publish(values.account_traffic);
+    let traffic_runtime = config.traffic_runtime.clone();
     let runtime = Arc::new(provider_openai::OpenAiForkRuntime::new(
         (&config.openai).into(),
     ));
@@ -108,9 +122,16 @@ pub(super) fn initialize(config: &mut GatewayConfig) -> Result<(), ConfigError> 
                 .map_err(|_| AdminError::invalid("OpenAI 运行配置无效"))?;
         let policy = Arc::new(policy);
         let runtime = runtime.clone();
+        let traffic: gateway_core::account::AccountTrafficPolicy =
+            serde_json::from_value(active["account_traffic"].clone())
+                .map_err(|_| AdminError::invalid("账号瞬时保护配置无效"))?;
+        let traffic_runtime = traffic_runtime.clone();
         Ok(PreparedActivation {
             active,
-            publish: Box::new(move || runtime.publish(policy)),
+            publish: Box::new(move || {
+                runtime.publish(policy);
+                traffic_runtime.publish(traffic);
+            }),
         })
     });
     config.fork_settings = Some(Arc::new(

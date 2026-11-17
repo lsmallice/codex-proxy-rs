@@ -4,7 +4,7 @@ use std::{
     num::NonZeroU32,
     sync::{
         Arc,
-        atomic::{AtomicUsize, Ordering},
+        atomic::{AtomicBool, AtomicUsize, Ordering},
     },
     time::{Duration, SystemTime},
 };
@@ -41,6 +41,8 @@ use wiremock::{
 };
 
 struct Account {
+    dispatch_denied: AtomicBool,
+    dispatches: AtomicUsize,
     id: ProviderAccountId,
     revision: u64,
     failures: AtomicUsize,
@@ -51,6 +53,8 @@ impl Account {
     }
     fn with_identity(id: &str, revision: u64) -> Arc<Self> {
         Arc::new(Self {
+            dispatch_denied: AtomicBool::new(false),
+            dispatches: AtomicUsize::new(0),
             id: ProviderAccountId::new(id).unwrap(),
             revision,
             failures: AtomicUsize::new(0),
@@ -58,6 +62,19 @@ impl Account {
     }
 }
 impl UpstreamAccountConnection for Account {
+    fn wait_for_dispatch(&self) -> BoxFuture<'_, Result<(), ProviderError>> {
+        Box::pin(async {
+            self.dispatches.fetch_add(1, Ordering::SeqCst);
+            if self.dispatch_denied.load(Ordering::SeqCst) {
+                return Err(ProviderError::new(
+                    ProviderErrorKind::ConcurrencyQueueTimeout,
+                    UpstreamSendState::NotSent,
+                )
+                .with_retry_prohibited());
+            }
+            Ok(())
+        })
+    }
     fn account_id(&self) -> &ProviderAccountId {
         &self.id
     }
@@ -462,6 +479,7 @@ async fn adapter_http_and_sse_are_cold_authenticated_and_settled_once() {
             }
         }
         assert_eq!((costs, completed), (1, 1));
+        assert_eq!(account.dispatches.load(Ordering::SeqCst), 1);
         let state = state.unwrap();
         assert_eq!(state.extension_owner().unwrap().adapter_id, "example");
         assert_eq!(account.failures.load(Ordering::SeqCst), 0);
@@ -470,6 +488,40 @@ async fn adapter_http_and_sse_are_cold_authenticated_and_settled_once() {
         runtime.shutdown().await;
         super::wait_until_empty(cache.path()).await;
     }
+}
+
+#[tokio::test]
+async fn dispatch_rejection_does_not_send_managed_http_or_fake_completion() {
+    let server = MockServer::start().await;
+    let (cache, _, runtime) = setup(configuration(&server.uri(), false)).await;
+    let generation = ExtensionPreparationPort::prepare(&runtime, ConfigRevision::new(1).unwrap())
+        .await
+        .unwrap();
+    let account = Account::new();
+    account.dispatch_denied.store(true, Ordering::SeqCst);
+    let mut stream = execute(&runtime, &generation, account.clone(), "key-one", None);
+    let mut failed = false;
+    while let Some(event) = stream.next().await {
+        match event {
+            Err(_) => {
+                failed = true;
+                break;
+            }
+            Ok(event) => assert!(
+                !event
+                    .canonical_facts()
+                    .iter()
+                    .any(|fact| matches!(fact, GatewayEvent::Completed(_)))
+            ),
+        }
+    }
+    assert!(failed);
+    assert_eq!(account.dispatches.load(Ordering::SeqCst), 1);
+    assert!(server.received_requests().await.unwrap().is_empty());
+    drop(stream);
+    drop(generation);
+    runtime.shutdown().await;
+    super::wait_until_empty(cache.path()).await;
 }
 
 #[tokio::test]

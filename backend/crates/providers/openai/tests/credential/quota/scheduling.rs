@@ -81,6 +81,8 @@ async fn old_weekly_quota_should_outweigh_one_in_flight_title_request() {
     let candidates = accounts
         .into_iter()
         .map(|account| AccountCandidate {
+            transfer: None,
+            warmup_limit: None,
             handoff: None,
             inherited_concurrency: None,
             signals: AccountRuntimeSignals {
@@ -300,6 +302,8 @@ async fn weekly_window_prefers_the_first_weekly_reset_independently_of_short_res
     let candidates = accounts
         .into_iter()
         .map(|account| AccountCandidate {
+            transfer: None,
+            warmup_limit: None,
             handoff: None,
             inherited_concurrency: None,
             signals: AccountRuntimeSignals {

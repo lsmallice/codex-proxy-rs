@@ -56,6 +56,7 @@ struct RuntimeCooldown {
 
 /// 仅经 Core account port、TTL catalog cache 和 Redis lease 选择一个 OAuth session
 pub struct GrokAccountSessionSelector {
+    dispatch_limiter: Option<Arc<gateway_core::provider_ports::AccountDispatchLimiter>>,
     waiting: ConcurrencyWaitQueue<ProviderAccountId>,
     provider_kind: ProviderKind,
     repository: GrokCredentialRepository,
@@ -67,6 +68,13 @@ pub struct GrokAccountSessionSelector {
 }
 
 impl GrokAccountSessionSelector {
+    pub fn with_dispatch_limiter(
+        mut self,
+        limiter: Arc<gateway_core::provider_ports::AccountDispatchLimiter>,
+    ) -> Self {
+        self.dispatch_limiter = Some(limiter);
+        self
+    }
     #[must_use]
     pub fn new(
         provider_kind: ProviderKind,
@@ -78,6 +86,7 @@ impl GrokAccountSessionSelector {
         account_feedback: Arc<AccountFeedbackStats>,
     ) -> Self {
         Self {
+            dispatch_limiter: None,
             provider_kind,
             repository,
             catalog_cache,
@@ -275,6 +284,8 @@ impl GrokAccountSessionSelector {
                     Ok(AccountCandidate {
                         account,
                         signals,
+                        transfer: None,
+                        warmup_limit: None,
                         handoff: None,
                         inherited_concurrency: None,
                     })
@@ -345,6 +356,38 @@ impl GrokAccountSessionSelector {
                 };
                 let capacity = AccountSelector.capacity_snapshot(&candidates, &context);
                 let selected = selection.candidate();
+                if request.required_account().is_none()
+                    && !selection.is_policy_choice()
+                    && let Some(limiter) = &self.dispatch_limiter
+                    && !limiter.ready(selected.account.id()).await.map_err(|_| {
+                        GrokSessionSelectorError::CapacityUnavailable { retry_after: None }
+                    })?
+                {
+                    let mut alternatives = context.clone();
+                    alternatives
+                        .busy_accounts
+                        .insert(selected.account.id().clone());
+                    let mut ready = false;
+                    while let Some(other) = AccountSelector.select(&candidates, &alternatives) {
+                        if limiter
+                            .ready(other.candidate().account.id())
+                            .await
+                            .map_err(|_| GrokSessionSelectorError::CapacityUnavailable {
+                                retry_after: None,
+                            })?
+                        {
+                            ready = true;
+                            break;
+                        }
+                        alternatives
+                            .busy_accounts
+                            .insert(other.candidate().account.id().clone());
+                    }
+                    if ready {
+                        context.busy_accounts = alternatives.busy_accounts;
+                        continue;
+                    }
+                }
                 let selected_id = selected.account.id().clone();
                 let selected_revision = selected.account.revision();
                 let allows_account_state_mutation = request

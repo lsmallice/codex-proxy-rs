@@ -1,6 +1,10 @@
 //! Provider 运行时所需的存储合同，按能力组织端口与共享策略
 
+mod dispatch;
 mod error;
+pub use dispatch::{
+    AccountDispatchGate, AccountDispatchLimiter, AccountDispatchStore, UnavailableDispatchStore,
+};
 mod handoff;
 pub use error::{ProviderStoreError, ProviderStoreErrorKind};
 pub use handoff::AccountHandoffStore;

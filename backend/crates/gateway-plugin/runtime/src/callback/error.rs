@@ -45,7 +45,7 @@ pub(super) fn gateway(error: GatewayError) -> PluginFault {
     fault
 }
 
-fn provider(error: &ProviderError) -> PluginFault {
+pub(super) fn provider(error: &ProviderError) -> PluginFault {
     let mut fault = gateway(GatewayError::from_provider(error));
     fault.send_state = match error.send_state() {
         UpstreamSendState::NotSent => SendState::NotSent,

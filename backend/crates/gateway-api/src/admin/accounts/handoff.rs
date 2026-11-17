@@ -71,6 +71,19 @@ where
 {
     Router::new()
         .route("/api/admin/accounts/handoffs", get(list::<S>))
+        .route(
+            "/api/admin/accounts/handoffs/groups",
+            get(groups::<S>).post(save_group::<S>),
+        )
+        .route(
+            "/api/admin/accounts/handoffs/groups/cancel",
+            post(cancel_group::<S>),
+        )
+        .route("/api/admin/accounts/warmups", get(warmups::<S>))
+        .route(
+            "/api/admin/accounts/warmups/cancel",
+            post(cancel_warmup::<S>),
+        )
         .route("/api/admin/accounts/handoffs/records", get(records::<S>))
         .route(
             "/api/admin/accounts/handoffs/policy",
@@ -79,7 +92,85 @@ where
         .route("/api/admin/accounts/handoffs/start", post(start::<S>))
         .route("/api/admin/accounts/handoffs/cancel", post(cancel::<S>))
 }
+async fn warmups<S>(_: AdminAuth, State(state): State<S>) -> Result<impl IntoResponse, AdminError>
+where
+    S: SessionState + Send + Sync,
+{
+    let items = state
+        .admin_services()
+        .accounts()
+        .account_warmups()
+        .await
+        .map_err(map_service_error)?;
+    Ok(AdminResponse::new(StatusCode::OK, AdminEnvelope::ok(items)))
+}
+async fn cancel_warmup<S>(
+    _: AdminAuth,
+    State(state): State<S>,
+    AdminJson(request): AdminJson<CancelRequest>,
+) -> Result<impl IntoResponse, AdminError>
+where
+    S: SessionState + Send + Sync,
+{
+    state
+        .admin_services()
+        .accounts()
+        .cancel_account_warmup(request.id, request.revision)
+        .await
+        .map_err(map_service_error)?;
+    Ok(AdminResponse::new(
+        StatusCode::OK,
+        AdminEnvelope::ok(serde_json::json!({})),
+    ))
+}
 
+async fn groups<S>(_: AdminAuth, State(state): State<S>) -> Result<impl IntoResponse, AdminError>
+where
+    S: SessionState + Send + Sync,
+{
+    let data = state
+        .admin_services()
+        .accounts()
+        .transfer_groups()
+        .await
+        .map_err(map_service_error)?;
+    Ok(AdminResponse::new(StatusCode::OK, AdminEnvelope::ok(data)))
+}
+async fn save_group<S>(
+    _: AdminAuth,
+    State(state): State<S>,
+    AdminJson(command): AdminJson<gateway_core::account::StartAccountTransfer>,
+) -> Result<impl IntoResponse, AdminError>
+where
+    S: SessionState + Send + Sync,
+{
+    let data = state
+        .admin_services()
+        .accounts()
+        .save_transfer_group(command)
+        .await
+        .map_err(map_service_error)?;
+    Ok(AdminResponse::new(StatusCode::OK, AdminEnvelope::ok(data)))
+}
+async fn cancel_group<S>(
+    _: AdminAuth,
+    State(state): State<S>,
+    AdminJson(command): AdminJson<CancelRequest>,
+) -> Result<impl IntoResponse, AdminError>
+where
+    S: SessionState + Send + Sync,
+{
+    state
+        .admin_services()
+        .accounts()
+        .cancel_transfer_group(command.id, command.revision)
+        .await
+        .map_err(map_service_error)?;
+    Ok(AdminResponse::new(
+        StatusCode::OK,
+        AdminEnvelope::ok(serde_json::json!({})),
+    ))
+}
 async fn records<S>(
     _: AdminAuth,
     State(state): State<S>,

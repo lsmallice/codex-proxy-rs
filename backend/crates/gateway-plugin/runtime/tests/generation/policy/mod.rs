@@ -619,6 +619,8 @@ async fn model_router_can_delegate_after_a_managed_http_side_effect() {
 
 fn candidate(id: &str, weight: u16) -> AccountCandidate {
     AccountCandidate {
+        transfer: None,
+        warmup_limit: None,
         handoff: None,
         inherited_concurrency: None,
         account: ProviderAccount::new(

@@ -26,7 +26,7 @@ pub struct ConcurrencyWaitBudget {
 }
 
 impl ConcurrencyWaitBudget {
-    fn deadline(&self, timeout: Duration, request_deadline: Option<SystemTime>) -> Instant {
+    pub fn deadline(&self, timeout: Duration, request_deadline: Option<SystemTime>) -> Instant {
         let now = Instant::now();
         let remaining = request_deadline.map_or(timeout, |at| {
             at.duration_since(SystemTime::now()).unwrap_or_default()

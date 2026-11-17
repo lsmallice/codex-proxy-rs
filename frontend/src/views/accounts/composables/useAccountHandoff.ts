@@ -1,7 +1,7 @@
 import type { Ref } from 'vue'
-import type { Account, AccountHandoff, AccountHandoffConfig, AccountHandoffPolicy, StartAccountHandoff } from '@/api'
+import type { Account, AccountHandoff, AccountHandoffConfig, AccountHandoffPolicy, AccountWarmupSnapshot, StartAccountHandoff } from '@/api'
 import { computed, onScopeDispose, shallowRef, watch } from 'vue'
-import { cancelAccountHandoff, getAccountHandoffPolicy, getAccountHandoffRecords, getAccounts, setAccountHandoffPolicy, startAccountHandoff } from '@/api'
+import { cancelAccountHandoff, cancelAccountWarmup, getAccountHandoffPolicy, getAccountHandoffRecords, getAccounts, getAccountWarmups, setAccountHandoffPolicy, startAccountHandoff } from '@/api'
 import { ApiError } from '@/api/request'
 import { useAsyncAction } from '@/composables/useAsyncAction'
 import { usePagedQuery } from '@/composables/usePagedQuery'
@@ -15,6 +15,7 @@ export function useAccountHandoff(open: Ref<boolean>) {
   const view = shallowRef<'active' | 'history'>('active')
   const occupied = shallowRef<string[]>([])
   const activeTotal = shallowRef(0)
+  const warmups = shallowRef<AccountWarmupSnapshot[]>([])
   const historyRetentionDays = shallowRef(7)
   const historyMaximumRecords = shallowRef(10000)
   const pending = shallowRef<StartAccountHandoff | null>(null)
@@ -44,9 +45,11 @@ export function useAccountHandoff(open: Ref<boolean>) {
       const options = { signal: query.signal, silent: true }
       await records.execute({ silent: !catalog })
       const currentPolicy = await getAccountHandoffPolicy(options)
+      const currentWarmups = await getAccountWarmups(options)
       if (!query.isCurrent(generation))
         return
       policy.value = currentPolicy
+      warmups.value = currentWarmups
       if (catalog) {
         const available: Account[] = []
         for (let page = 1; page <= 20; page++) {
@@ -135,6 +138,13 @@ export function useAccountHandoff(open: Ref<boolean>) {
       }
     })
   }
+  async function cancelWarmup(item: AccountWarmupSnapshot) {
+    return await run(async () => {
+      await cancelAccountWarmup(item.state.accountId, item.state.revision)
+      await refresh(true)
+      return true
+    })
+  }
   watch(open, (value) => {
     clearTimeout(timer)
     query.invalidate()
@@ -148,6 +158,7 @@ export function useAccountHandoff(open: Ref<boolean>) {
     items: records.items,
     view,
     activeTotal,
+    warmups,
     occupied,
     historyRetentionDays,
     historyMaximumRecords,
@@ -163,5 +174,6 @@ export function useAccountHandoff(open: Ref<boolean>) {
     start,
     cancel,
     configure,
+    cancelWarmup,
   }
 }

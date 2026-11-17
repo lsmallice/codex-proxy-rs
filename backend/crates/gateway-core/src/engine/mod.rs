@@ -297,6 +297,7 @@ pub struct RequestAttemptContext {
     timing_started_at: Instant,
     trace: crate::diagnostics::TraceContext,
     concurrency_wait_budget: crate::concurrency::ConcurrencyWaitBudget,
+    dispatch_wait_budget: crate::concurrency::ConcurrencyWaitBudget,
     connection_budget: connection::ConnectionBudget,
     request_policy: Option<policy::RequestPolicyContext>,
     execution_effects: Option<Arc<nested::ExecutionEffects>>,
@@ -422,6 +423,7 @@ impl RequestAttemptContext {
             timing_started_at: Instant::now(),
             trace: crate::diagnostics::TraceContext::default(),
             concurrency_wait_budget: crate::concurrency::ConcurrencyWaitBudget::default(),
+            dispatch_wait_budget: crate::concurrency::ConcurrencyWaitBudget::default(),
             connection_budget: connection::ConnectionBudget::default(),
             request_policy: None,
             execution_effects: None,
@@ -899,6 +901,10 @@ impl AttemptContext {
     #[must_use]
     pub const fn concurrency_wait_budget(&self) -> &crate::concurrency::ConcurrencyWaitBudget {
         &self.request.concurrency_wait_budget
+    }
+
+    pub const fn dispatch_wait_budget(&self) -> &crate::concurrency::ConcurrencyWaitBudget {
+        &self.request.dispatch_wait_budget
     }
 
     #[must_use]

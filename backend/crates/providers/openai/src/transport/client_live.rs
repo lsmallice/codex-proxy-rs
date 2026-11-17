@@ -150,6 +150,7 @@ impl CodexBackendClient {
                 .unwrap_or_default(),
         );
         let headers_started_at = Instant::now();
+        self.wait_for_dispatch().await?;
         let response = self
             .client
             .execute(outbound)

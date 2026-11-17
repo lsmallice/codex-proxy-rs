@@ -98,6 +98,23 @@ impl CodexProvider {
 }
 
 impl UpstreamAccountConnection for SelectedConnection {
+    fn wait_for_dispatch(&self) -> BoxFuture<'_, Result<(), ProviderError>> {
+        Box::pin(async {
+            if let Some(limiter) = &self.provider.dispatch_limiter {
+                limiter
+                    .gate(
+                        self.lease.account_id().clone(),
+                        self.context.deadline(),
+                        self.context.cancellation().clone(),
+                        self.context.dispatch_wait_budget().clone(),
+                        self.context.trace(),
+                    )
+                    .wait()
+                    .await?;
+            }
+            Ok(())
+        })
+    }
     fn account_id(&self) -> &ProviderAccountId {
         self.lease.account_id()
     }

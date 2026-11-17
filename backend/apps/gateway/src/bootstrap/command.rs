@@ -32,7 +32,8 @@ pub async fn plugin_command(
         help(command, environment, config.plugins).await
     } else {
         let environment = Environment::initialize(config.host, config.store, Mode::Command).await?;
-        let providers = Providers::initialize(config.openai, &environment).await?;
+        let providers =
+            Providers::initialize(config.openai, config.traffic_runtime, &environment).await?;
         execute(command, environment, providers, config.plugins).await
     }
 }

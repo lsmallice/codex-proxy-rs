@@ -3,6 +3,7 @@ import request from '../../request'
 
 export interface ForkHttpRoute { method: string, path: string }
 export interface ForkSettingsValues {
+  account_traffic: { enabled: boolean, burst: number, requests_per_second: number, max_wait_seconds: number, max_waiting: number }
   openai: {
     request_compatibility: { lite_context: boolean, store_false: boolean, json_object: boolean, min_output_tokens_16: boolean, tool_structure: boolean }
     model_unsupported_cooldown_seconds: number

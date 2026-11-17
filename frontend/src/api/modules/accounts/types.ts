@@ -168,6 +168,7 @@ export interface Account {
     usedSlots: number | null
     totalSlots: number | null
     handoffLimit: number | null
+    warmupLimit?: number | null
   }
   weight: number
   modelAccess: AccountModelAccess

@@ -5,6 +5,60 @@ use futures::future::BoxFuture;
 
 /// 存储端只负责幂等、CAS、共享计数与租约原子约束，不决定交接阶段
 pub trait AccountHandoffStore: Send + Sync {
+    fn transfer_samples(
+        &self,
+        _samples: Vec<crate::account::TransferQuotaSample>,
+    ) -> BoxFuture<
+        '_,
+        Result<
+            std::collections::BTreeMap<String, Vec<crate::account::TransferQuotaSample>>,
+            ProviderStoreError,
+        >,
+    > {
+        Box::pin(async { Ok(Default::default()) })
+    }
+    fn transfer_groups(
+        &self,
+    ) -> BoxFuture<'_, Result<Vec<crate::account::AccountTransferSnapshot>, ProviderStoreError>>
+    {
+        Box::pin(async { Ok(Vec::new()) })
+    }
+    fn save_transfer_group(
+        &self,
+        _state: crate::account::AccountTransferGroup,
+        _revision: u64,
+        _failures: u64,
+    ) -> BoxFuture<'_, Result<bool, ProviderStoreError>> {
+        Box::pin(async {
+            Err(ProviderStoreError::new(
+                super::ProviderStoreErrorKind::Unavailable,
+                "transfer groups unsupported",
+            ))
+        })
+    }
+    fn warmups(
+        &self,
+    ) -> BoxFuture<'_, Result<Vec<crate::account::AccountWarmupSnapshot>, ProviderStoreError>> {
+        Box::pin(async { Ok(Vec::new()) })
+    }
+    fn start_warmup(
+        &self,
+        _state: crate::account::AccountWarmup,
+    ) -> BoxFuture<'_, Result<(), ProviderStoreError>> {
+        Box::pin(async {
+            Err(ProviderStoreError::new(
+                super::ProviderStoreErrorKind::Unavailable,
+                "account warmup unsupported",
+            ))
+        })
+    }
+    fn update_warmup(
+        &self,
+        _state: crate::account::AccountWarmup,
+        _expected_failures: u64,
+    ) -> BoxFuture<'_, Result<bool, ProviderStoreError>> {
+        Box::pin(async { Ok(false) })
+    }
     fn history(
         &self,
         page: u32,

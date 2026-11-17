@@ -35,3 +35,20 @@ async fn handoff_record_pages_require_admin_and_reject_invalid_queries() {
         assert_eq!(response.status(), expected, "{query}");
     }
 }
+
+#[tokio::test]
+async fn handoff_groups_and_warmups_require_admin() {
+    let fixture = AdminTestFixture::new().await;
+    let router = admin::accounts::router::<AdminTestState>().with_state(fixture.state());
+    for path in [
+        "/api/admin/accounts/handoffs/groups",
+        "/api/admin/accounts/warmups",
+    ] {
+        let response = router
+            .clone()
+            .oneshot(Request::builder().uri(path).body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    }
+}

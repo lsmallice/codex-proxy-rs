@@ -70,6 +70,17 @@ impl GrokBuildProvider {
 }
 
 impl UpstreamAccountConnection for SelectedConnection {
+    fn wait_for_dispatch(&self) -> BoxFuture<'_, Result<(), ProviderError>> {
+        Box::pin(async {
+            if let Some(gate) = self
+                .provider
+                .dispatch_gate(self.session.account_id(), &self.context)
+            {
+                gate.wait().await?;
+            }
+            Ok(())
+        })
+    }
     fn account_id(&self) -> &ProviderAccountId {
         self.session.account_id()
     }

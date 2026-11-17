@@ -20,9 +20,11 @@ pub enum ProviderConcurrencyPool {
 /// 一个 Provider 的完整可重建调度状态
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ProviderSchedulingState {
+    transfers: Vec<crate::account::AccountTransferSnapshot>,
     handoff_policy: crate::account::AccountHandoffPolicy,
     handoff_handled: std::collections::BTreeSet<ProviderAccountId>,
     handoffs: BTreeMap<ProviderAccountId, crate::account::AccountHandoffCapacity>,
+    warmups: BTreeMap<ProviderAccountId, Option<u32>>,
     signals: BTreeMap<ProviderAccountId, AccountRuntimeSignals>,
     round_robin_cursor: u64,
 }
@@ -34,7 +36,9 @@ impl ProviderSchedulingState {
         round_robin_cursor: u64,
     ) -> Self {
         Self {
+            transfers: Vec::new(),
             handoffs: BTreeMap::new(),
+            warmups: BTreeMap::new(),
             handoff_policy: Default::default(),
             handoff_handled: Default::default(),
             signals,
@@ -59,6 +63,13 @@ impl ProviderSchedulingState {
     pub fn handoffs(&self) -> &BTreeMap<ProviderAccountId, crate::account::AccountHandoffCapacity> {
         &self.handoffs
     }
+    pub fn with_warmups(mut self, warmups: BTreeMap<ProviderAccountId, Option<u32>>) -> Self {
+        self.warmups = warmups;
+        self
+    }
+    pub fn warmups(&self) -> &BTreeMap<ProviderAccountId, Option<u32>> {
+        &self.warmups
+    }
 
     #[must_use]
     pub fn with_handoff_policy(
@@ -72,6 +83,13 @@ impl ProviderSchedulingState {
     }
     pub fn handoff_policy(&self) -> &crate::account::AccountHandoffPolicy {
         &self.handoff_policy
+    }
+    pub fn with_transfers(mut self, groups: Vec<crate::account::AccountTransferSnapshot>) -> Self {
+        self.transfers = groups;
+        self
+    }
+    pub fn transfers(&self) -> &[crate::account::AccountTransferSnapshot] {
+        &self.transfers
     }
     pub fn handoff_handled(&self) -> &std::collections::BTreeSet<ProviderAccountId> {
         &self.handoff_handled

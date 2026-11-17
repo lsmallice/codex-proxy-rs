@@ -96,6 +96,7 @@ const RESPONSE_NOT_FOUND_CODE: &str = "not_found";
 /// endpoint fallback 以及公开 xAI API key 推理都不在该 adapter 内
 #[derive(Clone)]
 pub struct GrokBuildProvider {
+    dispatch_limiter: Option<Arc<gateway_core::provider_ports::AccountDispatchLimiter>>,
     selector: Arc<dyn GrokSessionSelector>,
     transport: Arc<dyn GrokInferenceTransport>,
     catalog: Arc<GrokCredentialCatalogService>,
@@ -126,6 +127,28 @@ struct SelectedGrokAttempt {
 }
 
 impl GrokBuildProvider {
+    pub fn with_dispatch_limiter(
+        mut self,
+        limiter: Arc<gateway_core::provider_ports::AccountDispatchLimiter>,
+    ) -> Self {
+        self.dispatch_limiter = Some(limiter);
+        self
+    }
+    fn dispatch_gate(
+        &self,
+        account: &ProviderAccountId,
+        context: &AttemptContext,
+    ) -> Option<gateway_core::provider_ports::AccountDispatchGate> {
+        self.dispatch_limiter.as_ref().map(|limiter| {
+            limiter.gate(
+                account.clone(),
+                context.deadline(),
+                context.cancellation().clone(),
+                context.dispatch_wait_budget().clone(),
+                context.trace(),
+            )
+        })
+    }
     /// 在显式的会话与 transport 边界上创建 Provider
     pub fn new(
         selector: Arc<dyn GrokSessionSelector>,
@@ -138,6 +161,7 @@ impl GrokBuildProvider {
         let responses_url = Url::parse(GROK_RESPONSES_URL)
             .map_err(|_| GrokProviderConfigError::InvalidResponsesUrl)?;
         Ok(Self {
+            dispatch_limiter: None,
             selector,
             transport,
             catalog,
@@ -494,6 +518,7 @@ impl GrokBuildProvider {
             Arc::clone(&self.selector),
             Arc::clone(&self.transport),
             GrokStreamAttempt {
+                dispatch: self.dispatch_gate(selected.account_id(), &context),
                 client_identity: self.client_identity.clone(),
                 wire_profile: self.request_wire_profile(&context)?,
                 credential_recovery: Arc::clone(&self.credential_recovery),
@@ -571,6 +596,7 @@ impl GrokBuildProvider {
             Arc::clone(&self.selector),
             Arc::clone(&self.transport),
             GrokCompactionStreamAttempt {
+                dispatch: self.dispatch_gate(selected.account_id(), &context),
                 client_identity: self.client_identity.clone(),
                 wire_profile: self.request_wire_profile(&context)?,
                 credential_recovery: Arc::clone(&self.credential_recovery),

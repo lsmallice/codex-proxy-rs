@@ -21,6 +21,14 @@ use super::{
 };
 
 impl CodexBackendClient {
+    pub(super) async fn wait_for_dispatch(&self) -> CodexClientResult<()> {
+        if let Some(gate) = &self.dispatch_gate {
+            gate.wait()
+                .await
+                .map_err(|error| CodexClientError::Outbound(Box::new(error)))?;
+        }
+        Ok(())
+    }
     pub(crate) fn with_outbound_middleware(mut self, pipeline: Option<Pipeline>) -> Self {
         self.outbound_middleware = pipeline;
         self

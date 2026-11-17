@@ -2,6 +2,7 @@
 
 mod handoff;
 mod reset_credit_automation;
+mod transfer;
 pub(crate) use handoff::AccountHandoffTask;
 
 use std::{
@@ -57,6 +58,28 @@ const CONNECTION_TEST_INPUT: &str = "Reply with exactly OK.";
 /// 统一账号页消费的服务
 #[async_trait]
 pub trait AccountsService: Send + Sync {
+    async fn transfer_groups(
+        &self,
+    ) -> Result<Vec<gateway_core::account::AccountTransferSnapshot>, AdminError> {
+        Ok(Vec::new())
+    }
+    async fn save_transfer_group(
+        &self,
+        _command: gateway_core::account::StartAccountTransfer,
+    ) -> Result<gateway_core::account::AccountTransferSnapshot, AdminError> {
+        Err(AdminError::unavailable("交接组不可用"))
+    }
+    async fn cancel_transfer_group(&self, _id: String, _revision: u64) -> Result<(), AdminError> {
+        Err(AdminError::unavailable("交接组不可用"))
+    }
+    async fn account_warmups(
+        &self,
+    ) -> Result<Vec<gateway_core::account::AccountWarmupSnapshot>, AdminError> {
+        Ok(Vec::new())
+    }
+    async fn cancel_account_warmup(&self, _id: String, _revision: u64) -> Result<(), AdminError> {
+        Err(AdminError::unavailable("新号保护服务不可用"))
+    }
     async fn handoff_policy(
         &self,
     ) -> Result<gateway_core::account::AccountHandoffPolicy, AdminError> {
@@ -553,6 +576,7 @@ impl DefaultAccountsService {
             });
         let mut item = AccountDirectoryItem {
             protection_rules: stored.protection_rules,
+            warmup_limit: None,
             handoff_limit: None,
             capacity: super::peer_link::upstream::account_capacity(
                 &stored.account,
@@ -607,6 +631,14 @@ impl AccountsService for DefaultAccountsService {
     ) -> Result<Vec<gateway_core::account::AccountHandoffSnapshot>, AdminError> {
         self.handoff_list().await
     }
+    async fn account_warmups(
+        &self,
+    ) -> Result<Vec<gateway_core::account::AccountWarmupSnapshot>, AdminError> {
+        self.warmup_list().await
+    }
+    async fn cancel_account_warmup(&self, id: String, revision: u64) -> Result<(), AdminError> {
+        self.warmup_cancel(id, revision).await
+    }
     async fn start_handoff(
         &self,
         command: gateway_core::account::StartAccountHandoff,
@@ -623,7 +655,22 @@ impl AccountsService for DefaultAccountsService {
         self.handoff_cancel(id, revision, context).await
     }
     async fn reconcile_handoffs(&self) -> Result<(), AdminError> {
-        self.handoff_reconcile().await
+        self.handoff_reconcile().await?;
+        self.transfer_reconcile().await
+    }
+    async fn transfer_groups(
+        &self,
+    ) -> Result<Vec<gateway_core::account::AccountTransferSnapshot>, AdminError> {
+        self.transfer_list().await
+    }
+    async fn save_transfer_group(
+        &self,
+        command: gateway_core::account::StartAccountTransfer,
+    ) -> Result<gateway_core::account::AccountTransferSnapshot, AdminError> {
+        self.transfer_save(command).await
+    }
+    async fn cancel_transfer_group(&self, id: String, revision: u64) -> Result<(), AdminError> {
+        self.transfer_cancel(id, revision).await
     }
     async fn concurrency(
         &self,
@@ -717,6 +764,7 @@ impl AccountsService for DefaultAccountsService {
                 });
                 Ok(AccountDirectoryItem {
                     protection_rules: item.protection_rules,
+                    warmup_limit: None,
                     handoff_limit: None,
                     capacity: crate::model::accounts::AccountCapacity {
                         used_slots: in_flight

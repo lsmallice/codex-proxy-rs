@@ -1,6 +1,9 @@
 //! 账号交接容量投影、终态收尾、暂态恢复与观测失败边界
 
 use super::*;
+use gateway_core::account::{
+    AccountTransferGroup, AccountTransferSnapshot, TransferMember, TransferQuotaSample,
+};
 use gateway_core::{
     account::{
         AccountHandoff, AccountHandoffPage, AccountHandoffPhase, AccountHandoffPolicy,
@@ -14,9 +17,50 @@ struct HandoffProjectionStore {
     snapshots: Mutex<Vec<AccountHandoffSnapshot>>,
     reads: AtomicUsize,
     fail: AtomicBool,
+    transfers: Mutex<Vec<AccountTransferSnapshot>>,
+    samples: Mutex<BTreeMap<String, Vec<TransferQuotaSample>>>,
 }
 
 impl AccountHandoffStore for HandoffProjectionStore {
+    fn transfer_groups(
+        &self,
+    ) -> BoxFuture<'_, Result<Vec<AccountTransferSnapshot>, ProviderStoreError>> {
+        Box::pin(async { Ok(self.transfers.lock().unwrap().clone()) })
+    }
+    fn save_transfer_group(
+        &self,
+        mut state: AccountTransferGroup,
+        revision: u64,
+        failures: u64,
+    ) -> BoxFuture<'_, Result<bool, ProviderStoreError>> {
+        Box::pin(async move {
+            let mut items = self.transfers.lock().unwrap();
+            let item = items.iter_mut().find(|i| i.state.id == state.id).unwrap();
+            if item.state.revision != revision || item.feedback.failures != failures {
+                return Ok(false);
+            }
+            state.revision += 1;
+            item.state = state;
+            Ok(true)
+        })
+    }
+    fn transfer_samples(
+        &self,
+        samples: Vec<TransferQuotaSample>,
+    ) -> BoxFuture<'_, Result<BTreeMap<String, Vec<TransferQuotaSample>>, ProviderStoreError>> {
+        Box::pin(async move {
+            let history = self.samples.lock().unwrap();
+            Ok(samples
+                .into_iter()
+                .map(|s| {
+                    let mut points = history.get(&s.id).cloned().unwrap_or_default();
+                    let id = s.id.clone();
+                    points.push(s);
+                    (id, points)
+                })
+                .collect())
+        })
+    }
     fn list(&self) -> BoxFuture<'_, Result<Vec<AccountHandoffSnapshot>, ProviderStoreError>> {
         self.reads.fetch_add(1, Ordering::SeqCst);
         Box::pin(async {
@@ -121,6 +165,8 @@ async fn reconcile_fixture(
         }]),
         reads: AtomicUsize::new(0),
         fail: AtomicBool::new(false),
+        transfers: Mutex::default(),
+        samples: Mutex::default(),
     });
     let services = super::super::AdminHarness::new()
         .accounts(accounts.clone())
@@ -144,6 +190,177 @@ fn named_account(id: &str) -> AccountRecord {
     let mut account = account_record("openai");
     account.id = id.into();
     account
+}
+
+#[tokio::test]
+async fn transfer_reconcile_refreshes_priority_and_discards_stale_quota_without_upstream_calls() {
+    use gateway_core::account::AccountHandoffConfig;
+    let now = Utc::now();
+    let ms = now.timestamp_millis() as u64;
+    let reset = now + TimeDelta::hours(5);
+    let member = |id: &str, remaining| TransferMember {
+        id: id.into(),
+        name: id.into(),
+        baseline: 120,
+        limit: 0,
+        available: true,
+        terminal: false,
+        in_flight: 1,
+        remaining_basis_points: Some(remaining),
+        remaining_seconds: None,
+        ceiling: 200,
+    };
+    let mut group = AccountTransferGroup {
+        id: "transfer".into(),
+        group_id: "grp_00000000000000000000000000000091".into(),
+        automatic: false,
+        policy_revision: 0,
+        revision: 1,
+        config: AccountHandoffConfig {
+            transfer_group: Some(Default::default()),
+            new_account_protection: Some(Default::default()),
+            ..Default::default()
+        },
+        created_at_ms: ms - 60000,
+        checked_at_ms: ms - 5000,
+        old: vec![member("acct_old1", 1000), member("acct_old2", 7000)],
+        new: vec![member("acct_new", 9000)],
+        budget: 50,
+        previous_budget: 0,
+        stable_since_ms: None,
+        observed_successes: 0,
+        observed_failures: 0,
+        finished: false,
+        message: String::new(),
+    };
+    group.rebalance();
+    assert_eq!(group.old[0].id, "acct_old1");
+    let accounts = FakeAccountStore::with_account(named_account("acct_old1"), events());
+    accounts.set_accounts(
+        ["acct_old1", "acct_old2", "acct_new"]
+            .into_iter()
+            .map(|id| {
+                let mut a = named_account(id);
+                a.created_at = now - TimeDelta::minutes(30);
+                a.groups = vec![gateway_admin::model::account_groups::AccountGroupRef {
+                    id: gateway_core::routing::AccountGroupId::new(
+                        "grp_00000000000000000000000000000091",
+                    )
+                    .unwrap(),
+                    name: "Pool".into(),
+                    color: gateway_admin::model::account_groups::AccountGroupColor::parse(
+                        "#0F766EFF",
+                    )
+                    .unwrap(),
+                    enabled: true,
+                }];
+                a
+            })
+            .collect(),
+    );
+    let provider = FakeProviderAdmin::new("openai", events());
+    for (id, used) in [("acct_old1", 40.0), ("acct_old2", 90.0), ("acct_new", 10.0)] {
+        provider.account_quotas.lock().unwrap().insert(
+            id.into(),
+            ProviderQuota {
+                observed_at: Some(now),
+                windows: vec![ProviderQuotaWindow {
+                    upstream: None,
+                    key: "weekly".into(),
+                    group: "primary".into(),
+                    label: "额度".into(),
+                    limit_id: None,
+                    limit_name: None,
+                    role: None,
+                    local_usage_attribution: QuotaLocalUsageAttribution::AccountWide,
+                    window_seconds: Some(604800),
+                    used_percent: Some(used),
+                    reset_at: Some(reset),
+                    limit_reached: false,
+                    local_usage: None,
+                    provider_data: None,
+                }],
+                ..empty_quota()
+            },
+        );
+    }
+    let store = Arc::new(HandoffProjectionStore {
+        snapshots: Mutex::default(),
+        reads: AtomicUsize::new(0),
+        fail: AtomicBool::new(false),
+        transfers: Mutex::new(vec![AccountTransferSnapshot {
+            state: group,
+            feedback: Default::default(),
+        }]),
+        samples: Mutex::new(BTreeMap::from([(
+            "acct_old2".into(),
+            vec![TransferQuotaSample {
+                id: "acct_old2".into(),
+                observed: ms - 60000,
+                reset: reset.timestamp_millis() as u64,
+                remaining: 9000,
+            }],
+        )])),
+    });
+    let services = super::super::AdminHarness::new()
+        .accounts(accounts)
+        .account_runtime(Arc::new(CapacityRuntime {
+            counts: Some(BTreeMap::new()),
+            fail: false,
+            reads: Mutex::default(),
+        }))
+        .handoffs(store.clone())
+        .settings(Arc::new(StaticSettingsStore::default()))
+        .provider(provider.clone())
+        .build()
+        .await;
+    services.accounts().reconcile_handoffs().await.unwrap();
+    let updated = store.transfers.lock().unwrap()[0].state.clone();
+    assert_eq!(updated.old[0].id, "acct_old2");
+    assert_eq!(updated.old[0].remaining_basis_points, Some(1000));
+    assert!(updated.old[0].remaining_seconds.is_some_and(|s| s <= 8));
+    assert_eq!(updated.old[0].limit, 70);
+    assert_eq!(updated.old[1].limit, 120);
+
+    // 额度恢复时按新读数排序，不继续使用之前的耗尽倒计时
+    provider
+        .account_quotas
+        .lock()
+        .unwrap()
+        .get_mut("acct_old2")
+        .unwrap()
+        .windows[0]
+        .used_percent = Some(1.0);
+    services.accounts().reconcile_handoffs().await.unwrap();
+    let updated = store.transfers.lock().unwrap()[0].state.clone();
+    assert_eq!(updated.old[0].id, "acct_old1");
+    assert_eq!(updated.old[1].remaining_basis_points, Some(9900));
+
+    for q in provider.account_quotas.lock().unwrap().values_mut() {
+        q.observed_at = Some(now - TimeDelta::minutes(6));
+    }
+    services.accounts().reconcile_handoffs().await.unwrap();
+    let updated = store.transfers.lock().unwrap()[0].state.clone();
+    assert!(
+        updated
+            .old
+            .iter()
+            .all(|m| m.remaining_basis_points.is_none())
+    );
+    assert!(
+        updated
+            .old
+            .iter()
+            .all(|m| m.remaining_seconds.is_some_and(|s| s > 5000))
+    );
+    assert!(
+        provider
+            .quota_requests
+            .lock()
+            .unwrap()
+            .iter()
+            .all(|q| !q.refresh)
+    );
 }
 
 #[tokio::test]
@@ -321,6 +538,8 @@ async fn handoff_capacity_is_scoped_to_old_account_and_preserves_configured_limi
             }]),
             reads: AtomicUsize::new(0),
             fail: AtomicBool::new(false),
+            transfers: Mutex::default(),
+            samples: Mutex::default(),
         });
         let services = super::super::AdminHarness::new()
             .accounts(accounts.clone())

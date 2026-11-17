@@ -143,15 +143,19 @@ pub async fn initialize(ports: ProviderStorePorts) -> Result<ProviderBundle, Xai
         billing_transport,
         profile.clone(),
     ));
-    let selector: Arc<dyn GrokSessionSelector> = Arc::new(GrokAccountSessionSelector::new(
-        provider_kind.clone(),
-        repository.clone(),
-        catalog_cache,
-        Arc::clone(&quota),
-        Arc::clone(&leases),
-        Arc::clone(&cooldowns),
-        Arc::clone(&account_feedback),
-    ));
+    let dispatch_limiter = ports.dispatch_limiter();
+    let selector: Arc<dyn GrokSessionSelector> = Arc::new(
+        GrokAccountSessionSelector::new(
+            provider_kind.clone(),
+            repository.clone(),
+            catalog_cache,
+            Arc::clone(&quota),
+            Arc::clone(&leases),
+            Arc::clone(&cooldowns),
+            Arc::clone(&account_feedback),
+        )
+        .with_dispatch_limiter(dispatch_limiter.clone()),
+    );
     let inference: Arc<dyn GrokInferenceTransport> = Arc::new(
         ReqwestGrokInferenceTransport::new(Arc::clone(&endpoint_policy))
             .map_err(|_| XaiInitializeError::Transport)?,
@@ -190,7 +194,8 @@ pub async fn initialize(ports: ProviderStorePorts) -> Result<ProviderBundle, Xai
             account_feedback,
             profile.clone(),
         )
-        .map_err(|_| XaiInitializeError::Transport)?,
+        .map_err(|_| XaiInitializeError::Transport)?
+        .with_dispatch_limiter(dispatch_limiter),
     );
     let admin_provider: Arc<dyn ProviderAdmin> = Arc::new(XaiAdminProvider::new(
         provider_kind.clone(),

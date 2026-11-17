@@ -3,6 +3,7 @@
 use super::*;
 
 pub(super) struct GrokStreamAttempt {
+    pub(super) dispatch: Option<gateway_core::provider_ports::AccountDispatchGate>,
     pub(super) client_identity: GrokClientIdentity,
     pub(super) wire_profile: XaiWireProfileState,
     pub(super) credential_recovery: Arc<dyn GrokCredentialRecovery>,
@@ -18,6 +19,7 @@ pub(super) struct GrokStreamAttempt {
 }
 
 pub(super) struct GrokCompactionStreamAttempt {
+    pub(super) dispatch: Option<gateway_core::provider_ports::AccountDispatchGate>,
     pub(super) client_identity: GrokClientIdentity,
     pub(super) wire_profile: XaiWireProfileState,
     pub(super) credential_recovery: Arc<dyn GrokCredentialRecovery>,
@@ -136,6 +138,7 @@ pub(super) fn cold_compaction_http_sse_stream(
     attempt: GrokCompactionStreamAttempt,
 ) -> EventStream {
     let GrokCompactionStreamAttempt {
+        dispatch,
         client_identity,
         wire_profile,
         credential_recovery,
@@ -186,6 +189,7 @@ pub(super) fn cold_compaction_http_sse_stream(
                 )))?;
                 return;
             };
+            if let Some(dispatch) = &dispatch { dispatch.wait().await?; }
             let cancellation = context.cancellation().clone();
             let boundary = tokio::select! {
                 biased;
@@ -441,6 +445,7 @@ pub(super) fn cold_http_sse_stream(
     attempt: GrokStreamAttempt,
 ) -> EventStream {
     let GrokStreamAttempt {
+        dispatch,
         client_identity,
         wire_profile,
         credential_recovery,
@@ -491,6 +496,7 @@ pub(super) fn cold_http_sse_stream(
                 ))?;
                 return;
             };
+            if let Some(dispatch) = &dispatch { dispatch.wait().await?; }
             let boundary = tokio::select! {
                 biased;
                 _ = cancellation.cancelled() => InferenceBoundary::Cancelled,

@@ -20,6 +20,10 @@ pub struct GatewayConfig {
     pub(super) openai: provider_openai::OpenAiConfig,
     #[serde(default)]
     pub(super) plugins: gateway_plugin_runtime::PluginStartupConfig,
+    #[serde(default)]
+    pub(super) account_traffic: gateway_core::account::AccountTrafficPolicy,
+    #[serde(skip)]
+    pub(super) traffic_runtime: std::sync::Arc<gateway_core::account::AccountTrafficRuntime>,
     #[serde(skip)]
     pub(super) fork_settings:
         Option<std::sync::Arc<gateway_host::fork_settings::ForkSettingsStore>>,

@@ -15,6 +15,8 @@ const open = defineModel<boolean>({ required: true })
 const { data, entries, loading, error } = useAccountConcurrency(toRef(props, 'account'), open)
 const description = computed(() => {
   const capacity = props.account?.capacity
+  if (capacity?.warmupLimit != null)
+    return `${t('accounts.handoff.protection')} · ${capacity.warmupLimit}`
   return capacity?.handoffLimit != null
     ? t('accounts.capacity.handoffDescription', { limit: capacity.handoffLimit, configured: capacity.totalSlots ?? t('common.values.unlimited') })
     : t('accounts.concurrency.description')

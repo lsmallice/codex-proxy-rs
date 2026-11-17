@@ -69,9 +69,13 @@ pub(super) struct Providers {
 impl Providers {
     pub(super) async fn initialize(
         config: provider_openai::OpenAiConfig,
+        traffic_runtime: Arc<gateway_core::account::AccountTrafficRuntime>,
         environment: &Environment,
     ) -> Result<Self, BootstrapError> {
-        let ports = environment.store.provider_ports();
+        let ports = environment
+            .store
+            .provider_ports()
+            .with_traffic_runtime(traffic_runtime);
         let upstream_reader = Arc::new(gateway_core::account::UpstreamInfoReader::default());
         let openai = provider_openai::initialize(
             config.with_timezone(environment.timezone),

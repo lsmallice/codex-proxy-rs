@@ -15,6 +15,7 @@ pub(super) async fn prepare(
     scope: Option<&scope::FrozenAccountScope>,
     configured: AccountSelectionPolicy,
     excluded: &BTreeSet<ProviderAccountId>,
+    pairing: bool,
 ) -> Result<bool, ProviderStoreError> {
     let policy = scheduling.handoff_policy();
     let Some(scope) = scope.filter(|_| policy.enabled) else {
@@ -44,10 +45,47 @@ pub(super) async fn prepare(
     };
     let mut ready = candidates.iter().filter(available).collect::<Vec<_>>();
     ready.sort_by_key(|c| c.account.created_at());
+    let mut changed = false;
+    if let Some(config) = &policy.config.new_account_protection {
+        for new in &ready {
+            if new.account.created_at().and_then(millis).is_some_and(|at| {
+                at > policy.protection_after_ms.max(policy.enabled_after_ms)
+                    && at <= now_ms
+                    && now_ms - at <= 7 * 86400 * 1000
+            }) && !scheduling.warmups().contains_key(new.account.id())
+            {
+                store
+                    .start_warmup(AccountWarmup::new(
+                        new.account.id().as_str().into(),
+                        new.account.name().into(),
+                        config.clone(),
+                        policy.revision,
+                        now_ms,
+                    ))
+                    .await?;
+                changed = true;
+            }
+        }
+    }
+    if !pairing {
+        return Ok(changed);
+    }
+    if policy.config.transfer_group.is_some() {
+        return Ok(
+            super::transfer::prepare(store, &ready, scheduling, scope, configured, now_ms).await?
+                || changed,
+        );
+    }
     let busy = scheduling
         .handoffs()
         .iter()
         .flat_map(|(id, h)| [id.as_str(), h.new_account_id.as_str()])
+        .chain(
+            scheduling
+                .transfers()
+                .iter()
+                .flat_map(|g| g.state.participant_ids()),
+        )
         .collect::<BTreeSet<_>>();
     for new in ready.iter().copied().filter(|c| {
         c.account.created_at().and_then(millis).is_some_and(|at| {
@@ -112,5 +150,5 @@ pub(super) async fn prepare(
             Err(error) => return Err(error),
         }
     }
-    Ok(false)
+    Ok(changed)
 }

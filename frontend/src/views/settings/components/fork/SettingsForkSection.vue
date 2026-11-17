@@ -167,6 +167,23 @@ defineExpose({ hasChanges })
     <fieldset v-if="displayed" :disabled="disabled" :aria-label="t('forkSettings.title')" class="m-0 mt-5 grid min-w-0 gap-7 border-0 p-0">
       <section>
         <h2 class="text-z-base font-semibold">
+          {{ t('forkSettings.accountTraffic.title') }}
+          <ZTag type="success" class="ml-2">
+            {{ t('forkSettings.hotApply') }}
+          </ZTag>
+        </h2>
+        <div class="mt-4 grid max-w-6xl gap-4.5 sm:grid-cols-2 xl:grid-cols-3">
+          <ZFormItem :label="t('forkSettings.accountTraffic.enabled')">
+            <ZSwitch v-model="displayed.account_traffic.enabled" :disabled="disabled" :label="t('forkSettings.enable')" />
+          </ZFormItem>
+          <ForkNumber v-model="displayed.account_traffic.burst" :disabled="disabled || !displayed.account_traffic.enabled" :label="t('forkSettings.accountTraffic.burst')" :min="1" :max="1000" />
+          <ForkNumber v-model="displayed.account_traffic.requests_per_second" :disabled="disabled || !displayed.account_traffic.enabled" :label="t('forkSettings.accountTraffic.rate')" :min="1" :max="1000" />
+          <ForkNumber v-model="displayed.account_traffic.max_wait_seconds" :disabled="disabled || !displayed.account_traffic.enabled" :label="t('forkSettings.accountTraffic.wait')" :min="1" :max="30" :unit="t('forkSettings.seconds')" />
+          <ForkNumber v-model="displayed.account_traffic.max_waiting" :disabled="disabled || !displayed.account_traffic.enabled" :label="t('forkSettings.accountTraffic.queue')" :min="1" :max="1024" />
+        </div>
+      </section>
+      <section>
+        <h2 class="text-z-base font-semibold">
           {{ t('forkSettings.requestCompatibility') }}
           <ZTag type="success" class="ml-2">
             {{ t('forkSettings.hotApply') }}

@@ -199,6 +199,13 @@ pub(super) async fn dispatch(
             let request = serde_json::from_value(params).map_err(|_| invalid())?;
             let maximum_body_bytes = http.body_limit(&payload)?;
             let (request, purpose) = managed.request(request, payload, maximum_body_bytes)?;
+            if purpose == UpstreamPathPurpose::Inference {
+                managed
+                    .account
+                    .wait_for_dispatch()
+                    .await
+                    .map_err(|error| super::error::provider(&error))?;
+            }
             http.send(
                 request,
                 method == adapter::HTTP_DO_STREAM,
@@ -315,6 +322,11 @@ pub(super) async fn dispatch(
                 adapter::WebSocketMessageKind::Binary => WebSocketMessage::Binary(payload.into()),
             };
             let socket = managed.connection().await?;
+            managed
+                .account
+                .wait_for_dispatch()
+                .await
+                .map_err(|error| super::error::provider(&error))?;
             let attempt = scope.start_upstream(Some(UpstreamPathPurpose::Inference));
             let result = socket.send(message, timeout()?).await;
             attempt.finish(

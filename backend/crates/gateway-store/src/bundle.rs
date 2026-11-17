@@ -308,7 +308,11 @@ async fn connect(
         oauth_pending,
         diagnostics.clone(),
     )
-    .with_handoffs(handoffs);
+    .with_handoffs(handoffs)
+    .with_dispatch_store(Arc::new(redis::RedisAccountDispatchStore::new(
+        redis_connection.clone(),
+        REDIS_NAMESPACE,
+    )?));
     let worker_leader_lease = Arc::new(redis::worker_lease::RedisWorkerLeaderLeasePort::new(
         credential_leases,
     ));

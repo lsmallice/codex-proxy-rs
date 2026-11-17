@@ -101,6 +101,10 @@ pub struct UpstreamAdapterInvocation {
 /// 鉴权头只交给宿主网络边界，不能投影到插件 RPC
 /// 目标授权由适配器注册与受管网络检查，凭据格式及刷新协议仍归 Provider
 pub trait UpstreamAccountConnection: Send + Sync {
+    /// 每次受管业务 HTTP 请求或 WS 数据消息发送前复核账号发送预算
+    fn wait_for_dispatch(&self) -> BoxFuture<'_, Result<(), ProviderError>> {
+        Box::pin(async { Ok(()) })
+    }
     fn account_id(&self) -> &ProviderAccountId;
     fn credential_revision(&self) -> CredentialRevision;
     fn authentication_kind(&self) -> &str;

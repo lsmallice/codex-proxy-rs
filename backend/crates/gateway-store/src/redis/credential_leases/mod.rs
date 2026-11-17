@@ -40,6 +40,31 @@ redis.call('ZREMRANGEBYSCORE', KEYS[1], '-inf', now_ms)
 local in_flight = redis.call('ZCARD', KEYS[1])
 local max_concurrent = tonumber(ARGV[4])
 local retry_ms = 0
+if ARGV[9] == '1' then
+ local transfer=redis.call('HGET',KEYS[5],'transfer-cap:'..ARGV[8])
+ if transfer then
+  local cap=cjson.decode(transfer)
+  if not cap.donor and cap.receiverKeys then
+   local shared=0
+   for _,key in ipairs(cap.receiverKeys) do
+    redis.call('ZREMRANGEBYSCORE',key,'-inf',now_ms)
+    shared=shared+redis.call('ZCARD',key)
+   end
+   if shared>=cap.sharedLimit then return {0,'0','0','500'} end
+  end
+  if not cap.donor or ARGV[7]==cap.groupId then
+   if cap.limit==0 then return {0,'0','0','500'} end
+   if max_concurrent==0 or cap.limit<max_concurrent then max_concurrent=cap.limit end
+  end
+ end
+end
+if ARGV[9] == '1' then
+  local raw = redis.call('HGET', KEYS[5], 'warmup:' .. ARGV[8])
+  if raw then
+    local ceiling = cjson.decode(raw).state.limit
+    if ceiling > 0 and (max_concurrent == 0 or ceiling < max_concurrent) then max_concurrent = ceiling end
+  end
+end
 
 if ARGV[7] ~= '' and redis.call('HGET', KEYS[5], 'old:' .. ARGV[8]) == ARGV[7] then
   local ceiling = tonumber(redis.call('HGET', KEYS[5], 'limit:' .. ARGV[8]) or '0')
@@ -551,6 +576,9 @@ impl RedisCredentialLeaseRepository {
                 .arg(detail)
                 .arg(handoff.unwrap_or_default())
                 .arg(&request.resource_id)
+                .arg(u8::from(
+                    request.scope == CredentialLeaseScope::ProviderAccount,
+                ))
                 .invoke_async(&mut connection)
                 .await
                 .map_err(|source| redis_unavailable("acquire credential lease", source))?;
@@ -815,6 +843,11 @@ impl ProviderLeasePort for RedisProviderLeaseCoordinator {
                     Default::default()
                 };
                 state = state
+                    .with_transfers(
+                        gateway_core::provider_ports::AccountHandoffStore::transfer_groups(&reader)
+                            .await?,
+                    )
+                    .with_warmups(reader.warmup_limits(accounts).await?)
                     .with_handoffs(handoffs)
                     .with_handoff_policy(policy, handled);
             }

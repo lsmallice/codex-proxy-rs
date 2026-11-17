@@ -164,6 +164,7 @@ pub struct CodexProvider {
     ws_response_recovery: crate::config::CodexWsResponseRecovery,
     request_compatibility: crate::config::CodexRequestCompatibility,
     fork_runtime: Option<Arc<crate::OpenAiForkRuntime>>,
+    dispatch_limiter: Option<Arc<gateway_core::provider_ports::AccountDispatchLimiter>>,
     response_recovery_slots: Arc<tokio::sync::Semaphore>,
     preconnect_slots: Arc<tokio::sync::Semaphore>,
     preconnect_loading: Arc<tokio::sync::Semaphore>,
@@ -316,6 +317,15 @@ impl CodexProvider {
         account: &ProviderAccount,
     ) -> Result<CodexBackendClient, ProviderError> {
         let mut client = self.client.clone();
+        client.dispatch_gate = self.dispatch_limiter.as_ref().map(|limiter| {
+            limiter.gate(
+                account.id().clone(),
+                context.deadline(),
+                context.cancellation().clone(),
+                context.dispatch_wait_budget().clone(),
+                context.trace(),
+            )
+        });
         client.peer_route = context
             .extension_scope()
             .peer_route()
@@ -388,6 +398,7 @@ impl CodexProvider {
             ws_response_recovery: crate::config::CodexWsResponseRecovery::default(),
             request_compatibility: crate::config::CodexRequestCompatibility::default(),
             fork_runtime: None,
+            dispatch_limiter: None,
             response_recovery_slots: Arc::new(tokio::sync::Semaphore::new(16)),
             rejected_ciphertexts: Arc::new(encrypted_history::Cache::default()),
             live_registry: Arc::new(CodexLiveRegistry::default()),
@@ -427,6 +438,19 @@ impl CodexProvider {
 
     pub fn with_fork_runtime(mut self, runtime: Option<Arc<crate::OpenAiForkRuntime>>) -> Self {
         self.fork_runtime = runtime;
+        self
+    }
+    pub fn with_dispatch_limiter(
+        mut self,
+        limiter: Arc<gateway_core::provider_ports::AccountDispatchLimiter>,
+    ) -> Self {
+        self.selector = Arc::new(
+            self.selector
+                .as_ref()
+                .clone()
+                .with_dispatch_limiter(limiter.clone()),
+        );
+        self.dispatch_limiter = Some(limiter);
         self
     }
 

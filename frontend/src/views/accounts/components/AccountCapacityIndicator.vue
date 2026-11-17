@@ -14,15 +14,23 @@ defineEmits<{ showDetails: [] }>()
 
 const { t } = useI18n({ useScope: 'global' })
 
-const limit = computed(() => props.capacity.handoffLimit ?? props.capacity.totalSlots)
+const limit = computed(() => {
+  const limits = [props.capacity.warmupLimit, props.capacity.handoffLimit, props.capacity.totalSlots].filter((v): v is number => v != null)
+  return limits.length
+    ? Math.min(...limits)
+    : null
+})
+const warmup = computed(() => props.capacity.warmupLimit != null)
 const handoff = computed(() => props.capacity.handoffLimit != null)
 const full = computed(() => props.capacity.usedSlots !== null
   && limit.value !== null
   && props.capacity.usedSlots >= limit.value)
 const label = computed(() => t('accounts.capacity.concurrentRequestsLimit', { value: props.capacity.usedSlots ?? t('common.values.unknown'), value2: limit.value ?? t('common.values.unlimited') }))
-const handoffDescription = computed(() => handoff.value
-  ? t('accounts.capacity.handoffDescription', { limit: limit.value, configured: props.capacity.totalSlots ?? t('common.values.unlimited') })
-  : undefined)
+const handoffDescription = computed(() => warmup.value
+  ? t('accounts.handoff.protection')
+  : handoff.value
+    ? t('accounts.capacity.handoffDescription', { limit: limit.value, configured: props.capacity.totalSlots ?? t('common.values.unlimited') })
+    : undefined)
 </script>
 
 <template>
@@ -41,7 +49,8 @@ const handoffDescription = computed(() => handoff.value
         <Slash class="size-1.75 shrink-0 -rotate-20" />
         <span class="[text-box:trim-both_cap_alphabetic]">{{ limit ?? '∞' }}</span>
       </span>
-      <span v-if="handoff">{{ t('accounts.capacity.handoff') }}</span>
+      <span v-if="warmup">{{ t('accounts.handoff.protection') }}</span>
+      <span v-else-if="handoff">{{ t('accounts.capacity.handoff') }}</span>
     </span>
   </ZButton>
 </template>

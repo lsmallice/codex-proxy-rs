@@ -88,6 +88,7 @@ pub(super) struct FakeProviderAdmin {
     quota_started: tokio::sync::Notify,
     quota_gate: Mutex<Option<tokio::sync::oneshot::Receiver<()>>>,
     quota: Mutex<ProviderQuota>,
+    account_quotas: Mutex<BTreeMap<String, ProviderQuota>>,
     quota_refresh_account: Mutex<Option<(Arc<FakeAccountStore>, AccountRecord)>>,
     current_credential_revision: Mutex<Revision>,
     reset_credit_commands: Mutex<Vec<ConsumeProviderResetCredit>>,
@@ -118,6 +119,7 @@ impl FakeProviderAdmin {
             quota_started: tokio::sync::Notify::new(),
             quota_gate: Mutex::new(None),
             quota: Mutex::new(empty_quota()),
+            account_quotas: Mutex::default(),
             quota_refresh_account: Mutex::new(None),
             current_credential_revision: Mutex::new(revision(1)),
             reset_credit_commands: Mutex::new(Vec::new()),
@@ -485,6 +487,7 @@ impl ProviderAdmin for FakeProviderAdmin {
         &self,
         request: ProviderQuotaRequest,
     ) -> Result<ProviderQuota, ProviderAdminError> {
+        let id = request.account_id.as_str().to_owned();
         if request.refresh {
             self.record("provider.quota");
             if let Some((store, account)) = self
@@ -513,7 +516,13 @@ impl ProviderAdmin for FakeProviderAdmin {
         {
             return Err(ProviderAdminError::new(kind));
         }
-        Ok(self.quota.lock().expect("provider quota").clone())
+        Ok(self
+            .account_quotas
+            .lock()
+            .unwrap()
+            .get(&id)
+            .cloned()
+            .unwrap_or_else(|| self.quota.lock().expect("provider quota").clone()))
     }
 
     async fn reset_credits(
@@ -802,7 +811,7 @@ impl AccountStore for FakeAccountStore {
     async fn load_account(
         &self,
         account_id: &str,
-        _: AccountRuntimeSnapshot,
+        runtime: AccountRuntimeSnapshot,
     ) -> AdminStoreResult<Option<AccountPageItem>> {
         self.record("store.load_account");
         // probe 后的账号状态覆盖只对同一 id 生效；其余按账号列表查询
@@ -820,7 +829,14 @@ impl AccountStore for FakeAccountStore {
                     .find(|account| account.id == account_id)
                     .cloned()
             });
-        Ok(account.map(Self::page_item))
+        Ok(account.map(|a| {
+            let mut item = Self::page_item(a);
+            item.capacity.used_slots = runtime
+                .in_flight
+                .as_ref()
+                .map(|counts| counts.get(account_id).copied().unwrap_or(0));
+            item
+        }))
     }
 
     async fn load_account_usage(

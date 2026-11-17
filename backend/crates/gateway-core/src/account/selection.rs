@@ -544,6 +544,8 @@ impl AccountQuotaSignals {
 /// 账号持久事实与可重建运行信号的请求级组合
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AccountCandidate {
+    pub transfer: Option<super::AccountTransferCapacity>,
+    pub warmup_limit: Option<u32>,
     pub handoff: Option<super::AccountHandoffCapacity>,
     /// 本次选号已确认的上游默认上限，与本地可编辑覆盖独立
     pub inherited_concurrency: Option<super::AccountConcurrencyLimit>,
@@ -600,6 +602,18 @@ pub struct AccountSelectionContext {
 }
 
 impl AccountSelectionContext {
+    pub fn active_transfer<'a>(
+        &self,
+        candidate: &'a AccountCandidate,
+    ) -> Option<&'a super::AccountTransferCapacity> {
+        candidate.transfer.as_ref().filter(|t| {
+            self.reserved_concurrency == 0
+                && (!t.donor
+                    || t.peers
+                        .iter()
+                        .any(|id| !self.excluded_accounts.iter().any(|e| e.as_str() == id)))
+        })
+    }
     pub fn active_handoff<'a>(
         &self,
         candidate: &'a AccountCandidate,
@@ -624,12 +638,23 @@ impl AccountSelectionContext {
                     limit.into_non_zero().into()
                 });
             let configured = candidate.account.effective_concurrency(default);
-            self.active_handoff(candidate)
+            let limit = self
+                .active_handoff(candidate)
                 .map_or(configured, |handoff| {
                     AccountConcurrency::new(configured.limit().map_or(handoff.old_limit, |limit| {
                         limit.get().min(handoff.old_limit)
                     }))
-                })
+                });
+            let limit = self.active_transfer(candidate).map_or(limit, |t| {
+                AccountConcurrency::new(
+                    limit
+                        .limit()
+                        .map_or(t.limit.max(1), |n| n.get().min(t.limit.max(1))),
+                )
+            });
+            candidate.warmup_limit.map_or(limit, |ceiling| {
+                AccountConcurrency::new(limit.limit().map_or(ceiling, |n| n.get().min(ceiling)))
+            })
         }
     }
 }
@@ -828,6 +853,30 @@ impl AccountSelector {
             }
         }
         eligible.retain(|candidate| candidate.account.weight() == highest_weight);
+        // 交接组优先消耗老号保留容量，再在指定承接池内按实时占用率分摊
+        if let Some(candidate) = eligible
+            .iter()
+            .copied()
+            .filter(|c| context.active_transfer(c).is_some())
+            .min_by(|a, b| {
+                let ta = context.active_transfer(a).unwrap();
+                let tb = context.active_transfer(b).unwrap();
+                tb.donor
+                    .cmp(&ta.donor)
+                    .then_with(|| {
+                        capacity_utilization(a, context)
+                            .total_cmp(&capacity_utilization(b, context))
+                    })
+                    .then(a.signals.last_started_at.cmp(&b.signals.last_started_at))
+                    .then(a.account.id().cmp(b.account.id()))
+            })
+        {
+            return Some(AccountSelection {
+                candidate,
+                preferred,
+                policy_choice: false,
+            });
+        }
 
         // 亲和与管理员权重优先，允许重新选号时先消耗交接老号的剩余容量
         if let Some(candidate) = eligible
@@ -996,6 +1045,12 @@ impl AccountSelector {
             return Some(AccountSchedulingBlocker::Excluded);
         }
         if context.busy_accounts.contains(candidate.account.id()) {
+            return Some(AccountSchedulingBlocker::ConcurrencyLimit);
+        }
+        if context
+            .active_transfer(candidate)
+            .is_some_and(|t| t.limit == 0)
+        {
             return Some(AccountSchedulingBlocker::ConcurrencyLimit);
         }
         if context

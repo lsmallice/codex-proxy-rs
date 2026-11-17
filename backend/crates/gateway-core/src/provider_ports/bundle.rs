@@ -11,6 +11,8 @@ use std::{fmt, sync::Arc};
 /// Provider 只能按能力取用端口，无法取得 Redis client 或 repository 集合
 #[derive(Clone)]
 pub struct ProviderStorePorts {
+    dispatch: Arc<dyn super::AccountDispatchStore>,
+    traffic_runtime: Arc<crate::account::AccountTrafficRuntime>,
     handoffs: Option<Arc<dyn crate::provider_ports::AccountHandoffStore>>,
     accounts: Arc<dyn ProviderAccountStore>,
     leases: Arc<dyn ProviderLeasePort>,
@@ -44,6 +46,8 @@ impl ProviderStorePorts {
         diagnostics: Arc<dyn crate::diagnostics::OperationalDiagnostics>,
     ) -> Self {
         Self {
+            dispatch: Arc::new(super::UnavailableDispatchStore),
+            traffic_runtime: Arc::default(),
             handoffs: None,
             accounts,
             leases,
@@ -63,6 +67,24 @@ impl ProviderStorePorts {
     #[must_use]
     pub fn diagnostics(&self) -> Arc<dyn crate::diagnostics::OperationalDiagnostics> {
         self.diagnostics.clone()
+    }
+
+    pub fn with_dispatch_store(mut self, dispatch: Arc<dyn super::AccountDispatchStore>) -> Self {
+        self.dispatch = dispatch;
+        self
+    }
+    pub fn with_traffic_runtime(
+        mut self,
+        runtime: Arc<crate::account::AccountTrafficRuntime>,
+    ) -> Self {
+        self.traffic_runtime = runtime;
+        self
+    }
+    pub fn dispatch_limiter(&self) -> Arc<super::AccountDispatchLimiter> {
+        Arc::new(super::AccountDispatchLimiter::new(
+            self.dispatch.clone(),
+            self.traffic_runtime.clone(),
+        ))
     }
 
     #[must_use]

@@ -695,6 +695,7 @@ impl OpenAiUpstreamProtocol {
 /// Codex HTTP/SSE 上游客户端
 #[derive(Clone)]
 pub struct CodexBackendClient {
+    pub(crate) dispatch_gate: Option<gateway_core::provider_ports::AccountDispatchGate>,
     pub(super) preconnect_owner: Option<String>,
     pub(super) credential_revision: Option<u64>,
     pub(crate) peer_route: Option<reqwest::header::HeaderValue>,
@@ -757,6 +758,7 @@ impl CodexBackendClient {
             egress_key: String::new(),
             middleware_headers: Vec::new(),
             outbound_middleware: None,
+            dispatch_gate: None,
             base_url,
             official_base_url: super::endpoints::OFFICIAL_CODEX_BASE_URL.to_owned(),
             protocol: OpenAiUpstreamProtocol::Codex,

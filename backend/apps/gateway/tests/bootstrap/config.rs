@@ -78,6 +78,17 @@ fn saved_fork_settings_override_yaml_on_startup_and_reject_invalid_files() {
     let (loaded, _) = parse_config(&document.to_string()).unwrap();
     assert!(format!("{loaded:?}").contains("encrypted_history: true"));
     assert!(format!("{loaded:?}").contains("tool_structure: true"));
+    saved["values"]["account_traffic"] = serde_json::json!({"enabled":true,"burst":30,"requests_per_second":20,"max_wait_seconds":5,"max_waiting":100});
+    fs::write(&path, saved.to_string()).unwrap();
+    let (loaded, _) = parse_config(&document.to_string()).unwrap();
+    assert!(
+        format!("{loaded:?}")
+            .contains("AccountTrafficPolicy { enabled: true, burst: 30, requests_per_second: 20")
+    );
+    saved["values"]["account_traffic"]["requests_per_second"] = serde_json::json!(0);
+    fs::write(&path, saved.to_string()).unwrap();
+    assert!(parse_config(&document.to_string()).is_err());
+    saved["values"]["account_traffic"]["requests_per_second"] = serde_json::json!(20);
     saved["values"]["openai"]["ws_response_recovery"]["max_retries"] = serde_json::json!(6);
     fs::write(&path, saved.to_string()).unwrap();
     assert!(parse_config(&document.to_string()).is_err());

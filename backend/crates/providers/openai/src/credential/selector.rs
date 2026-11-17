@@ -134,6 +134,7 @@ pub(crate) struct CodexCyberPolicyScope {
 
 #[derive(Clone)]
 pub struct CodexCredentialSelector {
+    dispatch_limiter: Option<Arc<gateway_core::provider_ports::AccountDispatchLimiter>>,
     handoffs: Option<Arc<dyn gateway_core::provider_ports::AccountHandoffStore>>,
     waiting: Arc<ConcurrencyWaitQueue<ProviderAccountId>>,
     reserved_waiting: Arc<ConcurrencyWaitQueue<ProviderAccountId>>,
@@ -284,6 +285,13 @@ struct AffinityTelemetry {
 }
 
 impl CodexCredentialSelector {
+    pub fn with_dispatch_limiter(
+        mut self,
+        limiter: Arc<gateway_core::provider_ports::AccountDispatchLimiter>,
+    ) -> Self {
+        self.dispatch_limiter = Some(limiter);
+        self
+    }
     #[must_use]
     // 选择器显式持有各能力边界，避免把 Provider 私有服务重新包装成通用容器
     #[expect(clippy::too_many_arguments)]
@@ -303,6 +311,7 @@ impl CodexCredentialSelector {
     ) -> Self {
         Self {
             handoffs: None,
+            dispatch_limiter: None,
             provider_kind,
             repository,
             leases,
@@ -1146,6 +1155,8 @@ impl CodexCredentialSelector {
                         .with_rate_limit(rate_limits.get(account.id()).copied().flatten())
                         .with_runtime_health(health.0, health.1);
                     AccountCandidate {
+                        transfer: None,
+                        warmup_limit: None,
                         handoff: None,
                         account,
                         signals,
@@ -1180,7 +1191,6 @@ impl CodexCredentialSelector {
             }
             drop(projection_fill);
             if !diagnostic
-                && pinned_account.is_none()
                 && !request.guardian
                 && let Some(store) = &self.handoffs
                 && super::handoff::prepare(
@@ -1190,6 +1200,7 @@ impl CodexCredentialSelector {
                     request.attempt.account_scope().map(|s| s.as_ref()),
                     request.attempt.account_selection_policy(),
                     request.attempt.excluded_accounts(),
+                    pinned_account.is_none(),
                 )
                 .await?
             {
@@ -1218,7 +1229,37 @@ impl CodexCredentialSelector {
                 })
                 .map(|c| c.account.id().as_str().to_owned())
                 .collect::<std::collections::BTreeSet<_>>();
+            let transfer_capacities: std::collections::BTreeMap<_, _> = scheduling
+                .transfers()
+                .iter()
+                .flat_map(|g| g.state.capacities())
+                .collect();
             for candidate in &mut candidates {
+                candidate.transfer = if !request.guardian {
+                    transfer_capacities
+                        .get(candidate.account.id().as_str())
+                        .cloned()
+                        .map(|mut t| {
+                            t.peers.retain(|p| ready_ids.contains(p));
+                            t
+                        })
+                        .filter(|t| {
+                            !t.donor
+                                || (pinned_account.is_none()
+                                    && t.peers.iter().any(|p| ready_ids.contains(p)))
+                        })
+                } else {
+                    None
+                };
+                candidate.warmup_limit = if request.guardian {
+                    None
+                } else {
+                    scheduling
+                        .warmups()
+                        .get(candidate.account.id())
+                        .copied()
+                        .flatten()
+                };
                 candidate.handoff = if !diagnostic && pinned_account.is_none() && !request.guardian
                 {
                     scheduling
@@ -1240,6 +1281,18 @@ impl CodexCredentialSelector {
                         SystemTime::now(),
                     )
                 });
+            // 交接组内的软亲和可重新分配后续完整请求，固定续接和跟随线程仍保留原身份
+            if pinned_account.is_none()
+                && !follow_only
+                && affinity_mode == AccountAffinity::Preferred
+                && affinity.preferred_account().is_some_and(|id| {
+                    candidates
+                        .iter()
+                        .any(|c| c.account.id() == id && c.transfer.is_some())
+                })
+            {
+                affinity.escape(AffinityEscapeReason::SchedulingPolicy);
+            }
             let cyber_policy_scope = self
                 .prepare_cyber_policy_scope(cyber_policy_session_key)
                 .await;
@@ -1488,6 +1541,32 @@ impl CodexCredentialSelector {
                 };
                 affinity.observe_preferred_selection(selection.preferred());
                 let selected = selection.candidate();
+                if pinned_account.is_none()
+                    && !follow_only
+                    && !selection.is_policy_choice()
+                    && let Some(limiter) = &self.dispatch_limiter
+                    && !limiter.ready(selected.account.id()).await?
+                {
+                    let mut alternatives = context.clone();
+                    alternatives
+                        .busy_accounts
+                        .insert(selected.account.id().clone());
+                    let mut ready = false;
+                    while let Some(alternative) = AccountSelector.select(&candidates, &alternatives)
+                    {
+                        if limiter.ready(alternative.candidate().account.id()).await? {
+                            ready = true;
+                            break;
+                        }
+                        alternatives
+                            .busy_accounts
+                            .insert(alternative.candidate().account.id().clone());
+                    }
+                    if ready {
+                        busy_accounts.extend(alternatives.busy_accounts);
+                        continue;
+                    }
+                }
                 let account = candidates
                     .iter()
                     .find(|candidate| candidate.account.id() == selected.account.id())
@@ -1535,7 +1614,10 @@ impl CodexCredentialSelector {
                         )
                         .with_metadata(request.attempt.lease_metadata())
                         .with_account_handoff(
-                            context.active_handoff(selected).map(|h| h.id.clone()),
+                            context
+                                .active_transfer(selected)
+                                .map(|t| t.group_id.clone())
+                                .or_else(|| context.active_handoff(selected).map(|h| h.id.clone())),
                         )
                         .with_concurrency_pool(concurrency_pool)
                         .with_cancellation(request.attempt.cancellation().clone()),

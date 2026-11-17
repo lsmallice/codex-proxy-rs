@@ -135,6 +135,7 @@ impl CodexBackendClient {
                 .unwrap_or_default(),
         );
         let client = self.http_opening_client()?;
+        self.wait_for_dispatch().await?;
         let headers_started_at = Instant::now();
         let response = client.execute(outbound).await?;
         let upstream_headers_ms = elapsed_duration_millis(headers_started_at.elapsed());
@@ -592,6 +593,10 @@ impl CodexBackendClient {
                     request: websocket_request,
                     prepared,
                 } = *route;
+                if let Err(error) = self.wait_for_dispatch().await {
+                    prepared.discard().await;
+                    return Err(error);
+                }
                 let mut exchange = execute_prepared_response_create_request_stream(
                     &websocket_request,
                     prepared,

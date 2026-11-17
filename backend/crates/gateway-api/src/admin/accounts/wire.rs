@@ -323,6 +323,8 @@ pub struct AccountCapacityView {
     pub used_slots: Option<u64>,
     pub total_slots: Option<u64>,
     pub handoff_limit: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub warmup_limit: Option<u64>,
 }
 
 #[derive(Debug, Clone, Serialize)]

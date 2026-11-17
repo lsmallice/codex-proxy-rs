@@ -1,5 +1,6 @@
 {
   "forkSettings": {
+    "accountTraffic": { "title": "Account burst protection", "enabled": "Protect all accounts", "burst": "Burst allowance", "rate": "Requests per second", "wait": "Maximum wait", "queue": "Waiters per account" },
     "preconnect": "Session standby WS preconnections",
     "preconnectTotal": "Instance standby connection limit",
     "preconnectAccount": "Per-account standby connection limit",
@@ -28,7 +29,7 @@
     "refresh": "Reload",
     "undo": "Undo changes",
     "save": "Save settings",
-    "restartNotice": "New requests use saved rules, in-flight requests retain their snapshot, plugin settings and cache capacity require restart",
+    "restartNotice": "Request policies and account traffic protection apply on save, plugin settings and cache capacity require restart",
     "loading": "Loading fork settings",
     "retry": "Reload",
     "cooldown": "Model cooldown",

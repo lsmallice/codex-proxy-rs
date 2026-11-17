@@ -9,6 +9,8 @@ mod scope;
 mod selection;
 mod selection_diagnostics;
 mod smart_scheduling;
+mod transfer;
+mod warmup;
 
 mod error_protection;
 
@@ -52,6 +54,8 @@ fn account(id: &str) -> ProviderAccount {
 
 fn candidate(id: &str, in_flight: u32, remaining: Option<u64>) -> AccountCandidate {
     AccountCandidate {
+        transfer: None,
+        warmup_limit: None,
         handoff: None,
         inherited_concurrency: None,
         account: account(id),
@@ -220,6 +224,8 @@ fn inconclusive_quota_observation_cannot_erase_confirmed_access() {
 fn diagnostic_selection_bypasses_all_local_account_eligibility() {
     let observed_at = SystemTime::now();
     let exhausted = AccountCandidate {
+        transfer: None,
+        warmup_limit: None,
         handoff: None,
         inherited_concurrency: None,
         account: account("acct_exhausted").with_account_facts(
@@ -241,6 +247,8 @@ fn diagnostic_selection_bypasses_all_local_account_eligibility() {
         },
     };
     let disabled = AccountCandidate {
+        transfer: None,
+        warmup_limit: None,
         handoff: None,
         inherited_concurrency: None,
         account: account("acct_disabled").with_account_facts(

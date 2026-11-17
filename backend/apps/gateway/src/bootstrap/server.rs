@@ -34,7 +34,8 @@ pub async fn run() -> Result<(), BootstrapError> {
             tool_structure: config.openai.request_compatibility.tool_structure,
         };
     let environment = Environment::initialize(config.host, config.store, Mode::Server).await?;
-    let mut providers = Providers::initialize(config.openai, &environment).await?;
+    let mut providers =
+        Providers::initialize(config.openai, config.traffic_runtime, &environment).await?;
     let Environment {
         host,
         mut store,

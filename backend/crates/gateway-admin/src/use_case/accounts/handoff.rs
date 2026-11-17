@@ -7,7 +7,7 @@ use gateway_core::{
     task::*,
 };
 
-fn store_error(error: ProviderStoreError) -> AdminError {
+pub(super) fn store_error(error: ProviderStoreError) -> AdminError {
     match error.kind() {
         ProviderStoreErrorKind::Conflict => {
             AdminError::conflict("账号已参与其他交接或请求标识已被使用")
@@ -16,7 +16,7 @@ fn store_error(error: ProviderStoreError) -> AdminError {
     }
 }
 
-fn terminal_reason(account: Option<&AccountPageItem>) -> Option<&'static str> {
+pub(super) fn terminal_reason(account: Option<&AccountPageItem>) -> Option<&'static str> {
     let Some(item) = account else {
         return Some("已删除");
     };
@@ -73,6 +73,41 @@ impl DefaultAccountsService {
                     Some(item.capacity.total_slots.map_or(limit, |n| n.min(limit)));
             }
         }
+        if let Ok(groups) = store.transfer_groups().await {
+            for group in groups {
+                for (id, cap) in group.state.capacities() {
+                    if let Some(item) = items.iter_mut().find(|i| i.account.id == id) {
+                        let limit = u64::from(cap.limit);
+                        if cap.donor {
+                            item.handoff_limit =
+                                Some(item.capacity.total_slots.map_or(limit, |n| n.min(limit)));
+                        } else {
+                            item.warmup_limit = Some(limit);
+                        }
+                    }
+                }
+            }
+        }
+        match store.warmups().await {
+            Ok(warmups) => {
+                for warmup in warmups {
+                    if let Some(item) = items
+                        .iter_mut()
+                        .find(|item| item.account.id == warmup.state.account_id)
+                    {
+                        let limit = u64::from(warmup.state.limit);
+                        item.warmup_limit = Some(
+                            item.warmup_limit
+                                .unwrap_or(u64::MAX)
+                                .min(item.capacity.total_slots.map_or(limit, |n| n.min(limit))),
+                        );
+                    }
+                }
+            }
+            Err(error) => {
+                tracing::warn!(error = %error, "account warmup capacity projection is unavailable")
+            }
+        }
     }
 
     pub(super) async fn handoff_load_policy(&self) -> Result<AccountHandoffPolicy, AdminError> {
@@ -92,6 +127,14 @@ impl DefaultAccountsService {
             return Err(AdminError::conflict("交接设置已变化，请刷新后重试"));
         }
         let policy = AccountHandoffPolicy {
+            protection_after_ms: if enabled
+                && config.new_account_protection.is_some()
+                && (!current.enabled || current.config.new_account_protection.is_none())
+            {
+                Utc::now().timestamp_millis() as u64
+            } else {
+                current.protection_after_ms
+            },
             enabled,
             config,
             revision: revision
@@ -119,7 +162,7 @@ impl DefaultAccountsService {
         self
     }
 
-    fn handoff_store(&self) -> Result<&dyn AccountHandoffStore, AdminError> {
+    pub(super) fn handoff_store(&self) -> Result<&dyn AccountHandoffStore, AdminError> {
         self.handoffs
             .as_deref()
             .ok_or_else(|| AdminError::unavailable("账号交接服务不可用"))
@@ -320,6 +363,46 @@ impl DefaultAccountsService {
         let Some(store) = &self.handoffs else {
             return Ok(());
         };
+        for mut item in store.warmups().await.map_err(store_error)? {
+            let id = ProviderAccountId::new(item.state.account_id.clone())
+                .map_err(|_| AdminError::internal("新号保护账号 ID 无效"))?;
+            let runtime = self
+                .account_runtime
+                .account_runtime(&[id.as_str().to_owned()])
+                .await
+                .map_err(|e| map_store_error(e, "warmup runtime"))?;
+            let account = self
+                .accounts
+                .load_account(id.as_str(), runtime)
+                .await
+                .map_err(|e| map_store_error(e, "warmup account"))?;
+            let Some(account) = account else {
+                item.state.finished = true;
+                store
+                    .update_warmup(item.state, item.feedback.failures)
+                    .await
+                    .map_err(store_error)?;
+                continue;
+            };
+            let Some(count) = account.capacity.used_slots else {
+                continue;
+            };
+            item.state.advance(
+                Utc::now().timestamp_millis() as u64,
+                account.projection.status == AccountStatus::Normal,
+                terminal_reason(Some(&account)).is_some(),
+                u32::try_from(count).unwrap_or(u32::MAX),
+                account
+                    .capacity
+                    .total_slots
+                    .map(|v| u32::try_from(v).unwrap_or(u32::MAX)),
+                item.feedback,
+            );
+            store
+                .update_warmup(item.state, item.feedback.failures)
+                .await
+                .map_err(store_error)?;
+        }
         for mut item in store.list().await.map_err(store_error)? {
             let old_id = ProviderAccountId::new(item.state.old_account_id.clone())
                 .map_err(|_| AdminError::internal("交接账号 ID 无效"))?;
@@ -386,6 +469,34 @@ impl DefaultAccountsService {
                 .update(item.state, revision, item.feedback.failures)
                 .await
                 .map_err(store_error)?;
+        }
+        Ok(())
+    }
+    pub(super) async fn warmup_list(
+        &self,
+    ) -> Result<Vec<gateway_core::account::AccountWarmupSnapshot>, AdminError> {
+        self.handoff_store()?.warmups().await.map_err(store_error)
+    }
+    pub(super) async fn warmup_cancel(&self, id: String, revision: u64) -> Result<(), AdminError> {
+        let Some(mut item) = self
+            .warmup_list()
+            .await?
+            .into_iter()
+            .find(|x| x.state.account_id == id)
+        else {
+            return Ok(());
+        };
+        if item.state.revision != revision {
+            return Err(AdminError::conflict("新号保护状态已变化，请刷新"));
+        }
+        item.state.finished = true;
+        if !self
+            .handoff_store()?
+            .update_warmup(item.state, item.feedback.failures)
+            .await
+            .map_err(store_error)?
+        {
+            return Err(AdminError::conflict("新号保护状态已变化，请刷新"));
         }
         Ok(())
     }

@@ -69,6 +69,7 @@ impl CodexBackendClient {
                 .unwrap_or_default(),
         );
         let started = Instant::now();
+        self.wait_for_dispatch().await?;
         let response = self
             .http_opening_client()?
             .execute(request)

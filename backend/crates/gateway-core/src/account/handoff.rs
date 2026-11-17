@@ -12,6 +12,8 @@ pub const MAX_HANDOFF_HISTORY_RECORDS: usize = 10000;
 pub struct AccountHandoffPolicy {
     pub enabled: bool,
     pub enabled_after_ms: u64,
+    #[serde(default)]
+    pub protection_after_ms: u64,
     pub revision: u64,
     pub config: AccountHandoffConfig,
 }
@@ -29,6 +31,10 @@ pub struct StartAccountHandoff {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct AccountHandoffConfig {
+    #[serde(default)]
+    pub transfer_group: Option<super::AccountTransferConfig>,
+    #[serde(default)]
+    pub new_account_protection: Option<super::AccountWarmupConfig>,
     pub initial_new_concurrency: u32,
     pub minimum_old_concurrency: u32,
     pub decrement: u32,
@@ -39,6 +45,8 @@ pub struct AccountHandoffConfig {
 impl Default for AccountHandoffConfig {
     fn default() -> Self {
         Self {
+            transfer_group: None,
+            new_account_protection: None,
             initial_new_concurrency: 50,
             minimum_old_concurrency: 50,
             decrement: 30,
@@ -50,6 +58,15 @@ impl Default for AccountHandoffConfig {
 
 impl AccountHandoffConfig {
     pub fn validate(&self) -> Result<(), &'static str> {
+        if let Some(group) = &self.transfer_group {
+            group.validate()?;
+            if self.new_account_protection.is_none() {
+                return Err("交接组须启用新号并发保护");
+            }
+        }
+        if let Some(config) = &self.new_account_protection {
+            config.validate()?;
+        }
         if !(1..=10000).contains(&self.initial_new_concurrency)
             || !(1..=10000).contains(&self.minimum_old_concurrency)
             || !(1..=1000).contains(&self.decrement)
