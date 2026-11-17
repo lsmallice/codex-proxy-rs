@@ -107,6 +107,7 @@ export type {
   AccountModelUsage,
   AccountProtectionRule,
   AccountQuota,
+  AccountQuotaBucketSettings,
   AccountQuotaCredits,
   AccountQuotaWindow,
   AccountRefreshResponse,

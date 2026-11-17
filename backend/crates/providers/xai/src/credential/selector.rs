@@ -11,7 +11,7 @@ use gateway_core::account::{
     QuotaEvidence, QuotaState,
 };
 use gateway_core::concurrency::{CapacityWait, ConcurrencyQueuePolicy, ConcurrencyWaitQueue};
-use gateway_core::engine::policy::AccountPolicyError;
+use gateway_core::engine::policy::{AccountPolicyError, AccountScheduleOwnership};
 use gateway_core::provider_ports::{
     ProviderCooldown, ProviderCooldownPort, ProviderCooldownScope, ProviderLeaseAcquisition,
     ProviderLeasePort, ProviderLeaseRequest, ProviderSchedulingLeaseRequest,
@@ -185,6 +185,9 @@ impl GrokAccountSessionSelector {
                 .into_iter()
                 .filter(|account| {
                     request.upstream_context.as_ref().is_none_or(|context| {
+                        if context.excludes_proxy(account.outbound_proxy()) {
+                            return false;
+                        }
                         context
                             .upstream_adapter_for_account(
                                 &self.provider_kind,
@@ -334,6 +337,10 @@ impl GrokAccountSessionSelector {
                                 Some(request.upstream_model().as_str()),
                                 &candidates,
                                 &mut context,
+                                AccountScheduleOwnership {
+                                    pinned_account: request.required_account(),
+                                    ..Default::default()
+                                },
                             )
                             .await
                     }

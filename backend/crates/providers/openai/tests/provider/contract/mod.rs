@@ -22,6 +22,7 @@ mod passthrough;
 mod precommit;
 mod preconnect;
 mod privacy;
+mod quota_usage;
 mod recovery;
 mod response_interrupt;
 mod search_history;
@@ -4359,6 +4360,7 @@ async fn connection_failure_preserves_io_cause_without_claiming_payload_was_sent
     for (websocket, proxy_hint) in [
         (false, None),
         (true, None),
+        (false, Some(ProxyConnectionHint::Unreachable)),
         (false, Some(ProxyConnectionHint::CheckProxy)),
         (true, Some(ProxyConnectionHint::Unreachable)),
         (true, Some(ProxyConnectionHint::TunnelFailed)),
@@ -4367,7 +4369,11 @@ async fn connection_failure_preserves_io_cause_without_claiming_payload_was_sent
         create_account(&store, "acct_abrupt_disconnect").await;
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let base_url = format!("http://{}", listener.local_addr().unwrap());
-        let rejection = if proxy_hint == Some(ProxyConnectionHint::TunnelFailed) {
+        let tunnel_rejected = matches!(
+            proxy_hint,
+            Some(ProxyConnectionHint::TunnelFailed | ProxyConnectionHint::CheckProxy)
+        );
+        let rejection = if tunnel_rejected {
             Some(tokio::spawn(async move {
                 let (mut socket, _) = listener.accept().await.unwrap();
                 assert!(
@@ -4403,7 +4409,13 @@ async fn connection_failure_preserves_io_cause_without_claiming_payload_was_sent
         } else {
             http_generate_operation()
         };
-        let mut stream = provider_with_base_url(&store, base_url)
+        // HTTP 客户端仅为 HTTPS 目标执行 CONNECT；代理可达但拒绝隧道不能归因为拨号失败
+        let upstream = if !websocket && tunnel_rejected {
+            "https://upstream.invalid".to_owned()
+        } else {
+            base_url
+        };
+        let mut stream = provider_with_base_url(&store, upstream)
             .execute(
                 planned_request("openai", operation),
                 context("req_connect_refused", CancellationToken::new()),
@@ -4419,6 +4431,14 @@ async fn connection_failure_preserves_io_cause_without_claiming_payload_was_sent
         };
         let diagnostic = error.diagnostic().expect("connection diagnosis");
         assert_eq!(diagnostic.proxy_hint(), proxy_hint);
+        assert_eq!(
+            error.unreachable_proxy().is_some(),
+            proxy_hint == Some(ProxyConnectionHint::Unreachable)
+        );
+        assert_eq!(
+            error.allows_connection_rotation(),
+            proxy_hint != Some(ProxyConnectionHint::TunnelFailed)
+        );
         if let Some(rejection) = rejection {
             rejection.await.unwrap();
         }
@@ -4468,6 +4488,7 @@ async fn abrupt_websocket_disconnect_preserves_diagnosis_and_ambiguous_send_stat
     server.await.unwrap();
     assert_eq!(error.kind(), ProviderErrorKind::Transport);
     assert_eq!(error.send_state(), UpstreamSendState::Ambiguous);
+    assert!(!error.allows_connection_rotation());
     assert!(!error.replay_is_safe());
     assert!(
         matches!(error.pre_delivery_retry(), Some(PreDeliveryRetry::SameAccountTransportRetry { retry_index, .. }) if retry_index.get() == 1)
@@ -6087,15 +6108,18 @@ async fn websocket_metadata_close_requests_bounded_retry_without_claiming_replay
 }
 
 #[tokio::test]
-async fn general_quota_limits_filter_new_requests_until_every_window_recovers() {
+async fn general_quota_settings_filter_new_requests_until_every_window_recovers() {
     let store = Arc::new(MemoryAccountStore::default());
     let limited = "acct_provider_contract";
     let backup = "acct_scope_new";
     create_account(&store, limited).await;
     create_account(&store, backup).await;
-    store.set_quota_limits(
+    store.set_quota_settings(
         limited,
-        serde_json::from_value(json!({"codex:18000s":99, "codex:604800s":95})).unwrap(),
+        serde_json::from_value(
+            json!({"codex:18000s": {"limitPercent": 99, "warmup": null}, "codex:604800s": {"limitPercent": 95, "warmup": null}}),
+        )
+        .unwrap(),
     );
     let server = MockServer::start().await;
     Mock::given(method("POST"))
@@ -9257,6 +9281,57 @@ async fn websocket_usage_limit_rejection_preserves_quota_state_for_account_rotat
 }
 
 #[tokio::test]
+async fn bare_sse_error_without_status_preserves_request_and_capacity_classification() {
+    for (detail, expected_kind) in [
+        (
+            json!({"type":"invalid_request_error","code":null,"param":"input",
+                "message":"Response input messages must contain the word 'json' in some form to use 'text.format' of type 'json_object'."}),
+            ProviderErrorKind::InvalidRequest,
+        ),
+        (
+            json!({"type":"server_error","message":"An internal server error occurred."}),
+            ProviderErrorKind::Unavailable,
+        ),
+        (
+            json!({"type":"invalid_request_error","code":"server_is_overloaded","message":"overloaded"}),
+            ProviderErrorKind::UpstreamCapacityUnavailable,
+        ),
+    ] {
+        let frame = json!({"type":"error","error":detail});
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/codex/responses"))
+            .respond_with(ResponseTemplate::new(200).set_body_raw(
+                format!("event: error\ndata: {frame}\n\n"),
+                "text/event-stream",
+            ))
+            .expect(1)
+            .mount(&server)
+            .await;
+        let store = Arc::new(MemoryAccountStore::default());
+        create_account(&store, "acct_provider_contract").await;
+        let mut stream = provider_with_base_url(&store, server.uri())
+            .execute(
+                planned_request("openai", http_generate_operation()),
+                context("req_bare_sse_error", CancellationToken::new()),
+            )
+            .await
+            .unwrap();
+        let (mut events, mut error) = precommit::stream_failure(&mut stream).await;
+        assert_eq!(error.kind(), expected_kind, "{frame}");
+        assert_eq!(error.upstream_status(), None);
+        if expected_kind == ProviderErrorKind::InvalidRequest {
+            assert!(error.retry_is_prohibited());
+            let visible = error.client_visible_upstream_error().unwrap();
+            assert_eq!(visible.error_type(), Some("invalid_request_error"));
+            assert_eq!(Some(visible.message()), frame["error"]["message"].as_str());
+        }
+        events.extend(error.take_atomic_client_events());
+        assert_eq!(events.last().unwrap().wire_event().unwrap().data(), &frame);
+    }
+}
+
+#[tokio::test]
 async fn stream_failures_preserve_error_fields_independent_of_retry_classification() {
     for (use_websocket, (code, message, expected_kind, scored)) in
         [false, true].into_iter().flat_map(|websocket| {
@@ -12205,9 +12280,10 @@ async fn quota_continuation_opening_rejection_projects_replay_without_losing_ups
                     QuotaAccessState::Exhausted
                 );
             } else {
-                assert_ne!(
+                assert_eq!(
                     error.continuation_recovery_disposition(),
-                    Some(ContinuationRecoveryDisposition::ClientReplayRequired)
+                    (code == "slow_down")
+                        .then_some(ContinuationRecoveryDisposition::ClientReplayRequired)
                 );
                 assert_eq!(response.status(), 429);
                 assert_eq!(client, original);
@@ -12405,132 +12481,235 @@ async fn late_quota_continuation_rejection_requires_client_replay_before_output(
 }
 
 #[tokio::test]
-async fn quota_continuation_full_client_replay_selects_another_account() {
+async fn client_replay_rotation_without_session_identity_does_not_select_or_send() {
     let store = Arc::new(MemoryAccountStore::default());
     create_account(&store, "acct_provider_contract").await;
-    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let base_url = format!("http://{}", listener.local_addr().unwrap());
-    let full_input = json!([
-        {"role":"user","content":"hello"},
-        {"role":"assistant","content":"first answer"},
-        {"role":"user","content":"continue"},
-    ]);
-    let expected_input = full_input.clone();
-    let server = tokio::spawn(async move {
-        let (socket, _) = listener.accept().await.unwrap();
-        let mut ws = accept_codex_test_websocket(socket).await;
-        ws.next().await.unwrap().unwrap();
-        for event in [
-            json!({"type":"response.created","response":{"id":"resp_previous","model":"gpt-5.4"}}),
-            json!({"type":"response.completed","response":{"id":"resp_previous","model":"gpt-5.4","status":"completed","output":[]}}),
-        ] {
-            ws.send(Message::Text(event.to_string().into()))
+    let server = MockServer::start().await;
+    let error = provider_with_base_url(&store, server.uri())
+        .execute(
+            planned_request("openai", generate_operation()),
+            pinned_continuation_context(
+                "req_unbound_rotation",
+                "acct_provider_contract",
+                "client-previous",
+                "upstream-previous",
+                2,
+                ContinuationAttempt::RotateForClientReplay,
+            ),
+        )
+        .await
+        .err()
+        .expect("without a binding the next full request cannot follow a replacement account");
+    assert_eq!(error.kind(), ProviderErrorKind::NoEligibleAccount);
+    assert_eq!(error.send_state(), UpstreamSendState::NotSent);
+    assert!(server.received_requests().await.unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn continuation_full_client_replay_selects_another_account() {
+    for capacity in [false, true] {
+        let store = Arc::new(MemoryAccountStore::default());
+        create_account(&store, "acct_provider_contract").await;
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let base_url = format!("http://{}", listener.local_addr().unwrap());
+        let full_input = json!([
+            {"role":"user","content":"hello"},
+            {"role":"assistant","content":"first answer"},
+            {"role":"user","content":"continue"},
+        ]);
+        let expected_input = full_input.clone();
+        let server = tokio::spawn(async move {
+            let (socket, _) = listener.accept().await.unwrap();
+            let mut ws = accept_codex_test_websocket(socket).await;
+            ws.next().await.unwrap().unwrap();
+            for event in [
+                json!({"type":"response.created","response":{"id":"resp_previous","model":"gpt-5.4"}}),
+                json!({"type":"response.completed","response":{"id":"resp_previous","model":"gpt-5.4","status":"completed","output":[]}}),
+            ] {
+                ws.send(Message::Text(event.to_string().into()))
+                    .await
+                    .unwrap();
+            }
+            let delta: Value =
+                serde_json::from_str(ws.next().await.unwrap().unwrap().to_text().unwrap()).unwrap();
+            assert_eq!(delta["previous_response_id"], "resp_previous");
+            assert_eq!(
+                delta["input"],
+                json!([{"role":"user","content":"continue"}])
+            );
+            let failure = if capacity {
+                json!({"type":"error","error":{"type":"service_unavailable_error","code":"server_is_overloaded","message":"Our servers are currently overloaded. Please try again later.","headers":{"retry-after":"309","retry-after-ms":"309000"}}})
+            } else {
+                json!({"type":"error","status":429,"error":{"type":"usage_limit_reached","code":"usage_limit_reached","message":"You have reached your usage limit."}})
+            };
+            ws.send(Message::Text(failure.to_string().into()))
                 .await
                 .unwrap();
-        }
-        let delta: Value =
-            serde_json::from_str(ws.next().await.unwrap().unwrap().to_text().unwrap()).unwrap();
-        assert_eq!(delta["previous_response_id"], "resp_previous");
+            let (socket, _) = listener.accept().await.unwrap();
+            let mut ws = accept_codex_test_websocket(socket).await;
+            let replay: Value =
+                serde_json::from_str(ws.next().await.unwrap().unwrap().to_text().unwrap()).unwrap();
+            assert!(replay.get("previous_response_id").is_none());
+            assert_eq!(replay["input"], expected_input);
+            for event in [
+                json!({"type":"response.created","response":{"id":"resp_replayed","model":"gpt-5.4"}}),
+                json!({"type":"response.completed","response":{"id":"resp_replayed","model":"gpt-5.4","status":"completed","output":[]}}),
+            ] {
+                ws.send(Message::Text(event.to_string().into()))
+                    .await
+                    .unwrap();
+            }
+        });
+        let provider = provider_with_base_url(&store, base_url);
+        let first = Operation::Generate(generate_with_persisted_session_context(
+            "acct_provider_contract",
+            "conversation-quota",
+            "quota-replay",
+            "turn",
+        ));
+        let mut stream = Arc::clone(&provider)
+            .execute(
+                planned_request("openai", first),
+                context("req_quota_first", CancellationToken::new()),
+            )
+            .await
+            .unwrap();
         assert_eq!(
-            delta["input"],
-            json!([{"role":"user","content":"continue"}])
+            stream.metadata().provider_account_id().as_str(),
+            "acct_provider_contract"
         );
-        ws.send(Message::Text(json!({"type":"error","status":429,"error":{"type":"usage_limit_reached","code":"usage_limit_reached","message":"You have reached your usage limit."}}).to_string().into())).await.unwrap();
-        let (socket, _) = listener.accept().await.unwrap();
-        let mut ws = accept_codex_test_websocket(socket).await;
-        let replay: Value =
-            serde_json::from_str(ws.next().await.unwrap().unwrap().to_text().unwrap()).unwrap();
-        assert!(replay.get("previous_response_id").is_none());
-        assert_eq!(replay["input"], expected_input);
-        for event in [
-            json!({"type":"response.created","response":{"id":"resp_replayed","model":"gpt-5.4"}}),
-            json!({"type":"response.completed","response":{"id":"resp_replayed","model":"gpt-5.4","status":"completed","output":[]}}),
-        ] {
-            ws.send(Message::Text(event.to_string().into()))
+        while let Some(event) = stream.next().await {
+            event.unwrap();
+        }
+        drop(stream);
+        let mut stream = Arc::clone(&provider)
+            .execute(
+                planned_request("openai", quota_continuation_operation(true)),
+                context("req_quota_delta", CancellationToken::new())
+                    .with_continuation_attempt(ContinuationAttempt::Native),
+            )
+            .await
+            .unwrap();
+        let mut error = loop {
+            match stream.next().await {
+                Some(Ok(event)) => assert!(!event.has_client_event()),
+                Some(Err(error)) => break error,
+                None => panic!("expected quota rejection"),
+            }
+        };
+        drop(stream);
+        assert_eq!(
+            error.continuation_recovery_disposition(),
+            Some(ContinuationRecoveryDisposition::ClientReplayRequired)
+        );
+        create_account(&store, "acct_affinity_switch_b").await;
+        if capacity {
+            assert_eq!(error.kind(), ProviderErrorKind::UpstreamCapacityUnavailable);
+            assert_eq!(error.retry_after(), Some(Duration::from_secs(309)));
+            assert!(!error.take_atomic_client_events().is_empty());
+            let owner = ProviderAccountId::new("acct_provider_contract").unwrap();
+            let kind = ProviderKind::new("openai").unwrap();
+            let pin = NativeContinuationPin::new(
+                PreviousResponseId::new("resp_previous"),
+                PreviousResponseId::new("resp_previous"),
+                ClientApiKeyId::new("key_openai_contract").unwrap(),
+                kind.clone(),
+                owner.clone(),
+            )
+            .with_scope(
+                gateway_core::engine::continuation::NativeContinuationScope::ConnectionLocal,
+            );
+            let rotate = AttemptContext::new(
+                RequestAttemptContext::new(
+                    ModelRequestId::new("req_capacity_rotate").unwrap(),
+                    ClientApiKeyId::new("key_openai_contract").unwrap(),
+                ),
+                NonZeroU32::new(2).unwrap(),
+                SystemTime::now() + Duration::from_secs(5),
+                account_policy(),
+                AccountAttemptContext::new(
+                    BTreeSet::from([owner.clone()]),
+                    None,
+                    Some(ProviderAccountStateOwner::new(kind, owner)),
+                )
+                .with_account_scope(contract_account_scope()),
+                Some(ContinuationBinding::Pinned(pin)),
+                CancellationToken::new(),
+            )
+            .with_continuation_attempt(ContinuationAttempt::RotateForClientReplay);
+            error = Arc::clone(&provider)
+                .execute(
+                    planned_request("openai", quota_continuation_operation(true)),
+                    rotate,
+                )
                 .await
-                .unwrap();
+                .err()
+                .expect("rotation requests full client replay without sending delta");
+            assert_eq!(
+                error.continuation_unavailable_reason(),
+                Some("account_rotated")
+            );
+            assert_ne!(
+                store
+                    .account("acct_provider_contract")
+                    .unwrap()
+                    .quota()
+                    .access(),
+                QuotaAccessState::Exhausted
+            );
+        } else {
+            assert_eq!(
+                store
+                    .account("acct_provider_contract")
+                    .unwrap()
+                    .quota()
+                    .access(),
+                QuotaAccessState::Exhausted
+            );
         }
-    });
-    let provider = provider_with_base_url(&store, base_url);
-    let first = Operation::Generate(generate_with_persisted_session_context(
-        "acct_provider_contract",
-        "conversation-quota",
-        "quota-replay",
-        "turn",
-    ));
-    let mut stream = Arc::clone(&provider)
-        .execute(
-            planned_request("openai", first),
-            context("req_quota_first", CancellationToken::new()),
-        )
-        .await
-        .unwrap();
-    assert_eq!(
-        stream.metadata().provider_account_id().as_str(),
-        "acct_provider_contract"
-    );
-    while let Some(event) = stream.next().await {
-        event.unwrap();
-    }
-    drop(stream);
-    let mut stream = Arc::clone(&provider)
-        .execute(
-            planned_request("openai", quota_continuation_operation(true)),
-            context("req_quota_delta", CancellationToken::new())
-                .with_continuation_attempt(ContinuationAttempt::Native),
-        )
-        .await
-        .unwrap();
-    let mut error = loop {
-        match stream.next().await {
-            Some(Ok(event)) => assert!(!event.has_client_event()),
-            Some(Err(error)) => break error,
-            None => panic!("expected quota rejection"),
-        }
-    };
-    drop(stream);
-    assert_eq!(
-        error.client_visible_upstream_error().unwrap().code(),
-        Some("previous_response_not_found")
-    );
-    assert!(error.take_atomic_client_events().is_empty());
-    assert_eq!(
-        store
-            .account("acct_provider_contract")
-            .unwrap()
-            .quota()
-            .access(),
-        QuotaAccessState::Exhausted
-    );
-    create_account(&store, "acct_affinity_switch_b").await;
-    // 客户端重建完整历史，保留同一会话标识；选号必须跳过刚刚耗尽的原账号
-    let replay = Operation::Generate(GenerateRequest::from_protocol_payload(
+        assert_eq!(
+            error.client_visible_upstream_error().unwrap().code(),
+            Some("previous_response_not_found")
+        );
+        assert!(error.take_atomic_client_events().is_empty());
+        assert!(
+            error
+                .client_visible_upstream_response()
+                .unwrap()
+                .headers()
+                .iter()
+                .all(|header| !header.name().eq_ignore_ascii_case("retry-after")
+                    && !header.name().eq_ignore_ascii_case("retry-after-ms"))
+        );
+        // 客户端重建完整历史，保留同一会话标识；选号必须使用替代账号
+        let replay = Operation::Generate(GenerateRequest::from_protocol_payload(
         ProtocolPayload::json_object("openai", json!({"model":"gpt-5.4","session_id":"quota-replay","thread_id":"quota-replay","input":full_input}).as_object().unwrap().clone()).unwrap(),
     ));
-    let mut stream = provider
-        .execute(
-            planned_request("openai", replay),
-            context("req_quota_full", CancellationToken::new()),
-        )
-        .await
-        .unwrap();
-    assert_eq!(
-        stream.metadata().provider_account_id().as_str(),
-        "acct_affinity_switch_b"
-    );
-    let mut completed = false;
-    while let Some(event) = stream.next().await {
-        completed |= event
+        let mut stream = provider
+            .execute(
+                planned_request("openai", replay),
+                context("req_quota_full", CancellationToken::new()),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            stream.metadata().provider_account_id().as_str(),
+            "acct_affinity_switch_b"
+        );
+        let mut completed = false;
+        while let Some(event) = stream.next().await {
+            completed |= event
+                .unwrap()
+                .canonical_facts()
+                .iter()
+                .any(|fact| matches!(fact, GatewayEvent::Completed(_)));
+        }
+        assert!(completed);
+        timeout(Duration::from_secs(5), server)
+            .await
             .unwrap()
-            .canonical_facts()
-            .iter()
-            .any(|fact| matches!(fact, GatewayEvent::Completed(_)));
+            .unwrap();
     }
-    assert!(completed);
-    timeout(Duration::from_secs(5), server)
-        .await
-        .unwrap()
-        .unwrap();
 }
 
 #[tokio::test]

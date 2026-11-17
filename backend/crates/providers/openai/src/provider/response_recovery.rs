@@ -344,7 +344,8 @@ impl StreamRecovery {
             _ = context.deadline().wait() => false,
             _ = tokio::time::sleep_until(self.until) => false,
             allowed = async {
-                synchronize_passive_quota(quota, account, limits).await;
+                // 恢复仅在语义输出前进入，不把失败前导算作额度桶使用证据
+                synchronize_passive_quota(quota, account, limits, false).await;
                 selector.response_recovery_allowed(account).await
             } => allowed,
         }

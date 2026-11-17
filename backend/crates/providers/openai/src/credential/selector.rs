@@ -19,7 +19,10 @@ use gateway_core::account::{
 use gateway_core::concurrency::{
     CapacityWait, ConcurrencyQueuePolicy, ConcurrencyWaitQueue, QueueRejection, WaitPriority,
 };
-use gateway_core::engine::{AttemptContext, ContinuationAttempt, policy::AccountPolicyError};
+use gateway_core::engine::{
+    AttemptContext, ContinuationAttempt,
+    policy::{AccountPolicyError, AccountScheduleOwnership},
+};
 use gateway_core::provider_ports::{
     ProviderAccountAdmission, ProviderConcurrencyPool, ProviderCooldownPort, ProviderCooldownScope,
     ProviderLeaseAcquisition, ProviderLeaseGuard, ProviderLeasePort, ProviderLeaseRequest,
@@ -587,7 +590,9 @@ impl CodexCredentialSelector {
                         && request.attempt.required_account().is_none()
                         && matches!(
                             request.attempt.continuation_attempt(),
-                            ContinuationAttempt::None | ContinuationAttempt::ReplayAny
+                            ContinuationAttempt::None
+                                | ContinuationAttempt::ReplayAny
+                                | ContinuationAttempt::RotateForClientReplay
                         ) =>
                 {
                     reason
@@ -699,7 +704,9 @@ impl CodexCredentialSelector {
                 .account_state_owner()
                 .filter(|owner| owner.provider() == &self.provider_kind)
                 .map(|owner| owner.account().clone()),
-            ContinuationAttempt::None | ContinuationAttempt::ReplayAny => None,
+            ContinuationAttempt::None
+            | ContinuationAttempt::ReplayAny
+            | ContinuationAttempt::RotateForClientReplay => None,
         };
         let required_account = request.attempt.required_account().cloned();
         if required_account
@@ -1299,6 +1306,12 @@ impl CodexCredentialSelector {
             let mut excluded = request.attempt.excluded_accounts().clone();
             if !diagnostic {
                 for candidate in &candidates {
+                    if request
+                        .attempt
+                        .excludes_proxy(candidate.account.outbound_proxy())
+                    {
+                        excluded.insert(candidate.account.id().clone());
+                    }
                     if candidate.account.quota_paused() {
                         if follow_only
                             && binding.as_ref().is_some_and(|binding| {
@@ -1334,6 +1347,27 @@ impl CodexCredentialSelector {
             }
             let mut shortest_retry = None;
             let mut busy_accounts = std::collections::BTreeSet::new();
+            let binding_wait_error = |rejection| {
+                if rejection == QueueRejection::Timeout
+                    && follow_only
+                    && pinned_account.is_none()
+                    && let Some(account) = binding.as_ref().map(ProviderSessionBinding::account_id)
+                    && !account_ids.contains(account)
+                {
+                    // 仅在本次授权范围内区分明确的模型限制，其余资格缺失不推测原因
+                    let reason = match (model.model(), request.attempt.account_scope()) {
+                        (Some(model), Some(scope))
+                            if scope.allows(account) && !scope.allows_model(account, model) =>
+                        {
+                            "The parent session's account does not allow the requested model."
+                        }
+                        _ => "The parent session's account cannot serve this request.",
+                    };
+                    CredentialSelectionError::IneligibleSessionAccountTimeout(reason)
+                } else {
+                    CredentialSelectionError::QueueRejected(rejection)
+                }
+            };
             loop {
                 let preferred = pinned_account
                     .clone()
@@ -1362,6 +1396,14 @@ impl CodexCredentialSelector {
                         model.model(),
                         &candidates,
                         &mut context,
+                        AccountScheduleOwnership {
+                            bound_account: binding
+                                .as_ref()
+                                .filter(|_| !cache_preference)
+                                .map(ProviderSessionBinding::account_id),
+                            follow_only,
+                            pinned_account: pinned_account.as_ref(),
+                        },
                     )
                     .await
                 {
@@ -1383,7 +1425,10 @@ impl CodexCredentialSelector {
                         // 目标已有空位，恢复完整容量观测后再尝试准入
                         refresh_candidates = true;
                     } else if follow_only || wait_candidates.contains(queued) {
-                        waiting.wait(std::slice::from_ref(queued)).await?;
+                        waiting
+                            .wait(std::slice::from_ref(queued))
+                            .await
+                            .map_err(binding_wait_error)?;
                     } else {
                         refresh_candidates = true;
                     }
@@ -1467,10 +1512,21 @@ impl CodexCredentialSelector {
                 }
                 let Some(selection) = selection else {
                     if follow_only && let Some(binding) = binding.as_ref() {
+                        // 如果整个候选池共用本请求已排除的入口，等待根线程迁移也没有可用出口
+                        if !candidates.is_empty()
+                            && candidates.iter().all(|candidate| {
+                                request
+                                    .attempt
+                                    .excludes_proxy(candidate.account.outbound_proxy())
+                            })
+                        {
+                            return Err(CredentialSelectionError::NoEligibleCredential);
+                        }
                         // 冷却、排除、停用或当前账号不在本次范围时也只等待根线程恢复或迁移
                         waiting
                             .wait(std::slice::from_ref(binding.account_id()))
-                            .await?;
+                            .await
+                            .map_err(binding_wait_error)?;
                         continue 'capacity;
                     }
                     if !diagnostic && queue_policy.max_waiting > 0 && !wait_candidates.is_empty() {
@@ -2601,6 +2657,8 @@ pub enum CredentialSelectionError {
     SessionBound(#[source] Box<CredentialSelectionError>),
     #[error(transparent)]
     QueueRejected(#[from] QueueRejection),
+    #[error("{0} Timed out waiting for the session to switch accounts.")]
+    IneligibleSessionAccountTimeout(&'static str),
     #[error("no eligible Codex account")]
     NoEligibleCredential,
     #[error("upstream safety policy temporarily excludes accounts for this session")]

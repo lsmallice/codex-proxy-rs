@@ -235,10 +235,11 @@ impl AccountStore for PgAdminAccountStore {
         account_id: &CoreProviderAccountId,
     ) -> AdminStoreResult<Option<AccountRecord>> {
         self.accounts
-            .load_provider_account(account_id.as_str())
+            .list_provider_account_summaries(None, true, Some(&[account_id.as_str()]), None)
             .await
             .map_err(|error| admin_store_error(ENTITY, error))?
-            .map(|record| admin_account_record(record.summary))
+            .pop()
+            .map(admin_account_record)
             .transpose()
     }
 
@@ -455,6 +456,26 @@ impl AccountStore for PgAdminAccountStore {
         self.usage_by_windows(windows).await
     }
 
+    async fn quota_documents(
+        &self,
+        account: &gateway_core::account::ProviderAccountId,
+        provider: &gateway_core::routing::ProviderKind,
+        created_at: chrono::DateTime<chrono::Utc>,
+        range: gateway_admin::model::observability::TimeRange,
+        before: Option<&gateway_admin::model::quota_history::QuotaHistoryCursor>,
+    ) -> AdminStoreResult<gateway_admin::model::quota_history::QuotaDocumentPage> {
+        super::quota_history::documents(
+            &self.pool,
+            &self.query_budget,
+            account,
+            provider,
+            created_at,
+            range,
+            before,
+        )
+        .await
+    }
+
     async fn load_quota_forecast_history(
         &self,
         window: &AccountUsageWindowQuery,
@@ -665,7 +686,7 @@ impl AccountStore for PgAdminAccountStore {
             .batch_update_provider_accounts_admin(BatchUpdateProviderAccountsAdmin {
                 account_ids: vec![command.account_id.clone()],
                 pauses: Default::default(),
-                quota_limits: None,
+                quota_settings: None,
                 auto_use_quota_credits: None,
                 name: command.name,
                 notes: command.notes,
@@ -751,7 +772,7 @@ impl AccountStore for PgAdminAccountStore {
         };
         let mut changed_fields = Vec::new();
         for (changed, field) in [
-            (command.quota_limits.is_some(), "quota_limits"),
+            (command.quota_settings.is_some(), "quota_settings"),
             (
                 command.auto_use_quota_credits.is_some(),
                 "auto_use_quota_credits",
@@ -776,7 +797,7 @@ impl AccountStore for PgAdminAccountStore {
             .batch_update_provider_accounts_admin(BatchUpdateProviderAccountsAdmin {
                 account_ids: command.account_ids,
                 pauses,
-                quota_limits: command.quota_limits,
+                quota_settings: command.quota_settings,
                 auto_use_quota_credits: command.auto_use_quota_credits,
                 name: None,
                 notes: None,

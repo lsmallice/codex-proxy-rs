@@ -89,6 +89,7 @@ Provider 固定为宿主内置的 OpenAI 与 xAI。宿主开放以下 11 类扩�
 | `call.host.quota_details(query)` | `host.data.quota.details` | `QuotaFactsQuery { account_id }`：读取完整额度事实，包含窗口归属、触顶和点数 |
 | `call.host.check_access(query)` | `host.data.access.check` | `AccessQuery { client_key_id, account_ids, upstream_model }`：读取 Key 对指定账号及可选上游模型的冻结授权 |
 | `call.host.verify_client(request)` | `host.client.verify` | `VerifyClientRequest { authorization }`：复用入口认证，返回 `VerifiedClient { client_key_id }` |
+| `call.host.quota_history(query)` | `host.data.quota.history` | 按账号、窗口键和时间范围分页读取已保留的额度观测 |
 | `call.host.quota_facts(query)` | `host.data.quota.get` | `QuotaFactsQuery { account_id }`：读取 Provider 现有观测，不访问上游刷新 |
 | `call.host.key_facts(query)` | `host.data.keys.get` | `ClientKeyFactsQuery { client_key_id }`：读取当前 Key 的启用状态及显式分组 ID，不返回密钥 |
 
@@ -107,6 +108,16 @@ SDK 解析响应时忽略未知字段，包含账号分页、账号及额度窗�
 
 `quota_details` 保留 Provider 已解释的 `limit_reached`、窗口 `group`、`label`、`limit_id`、`limit_name`、`role`
 及点数 `has_credits`、`unlimited`、`balance`；缺失值仍为 `null`，不返回上游原始文档，不发起刷新
+
+`quota_history(QuotaHistoryQuery { account_id, window_key, start_ms, end_ms, cursor })` 按请求完成时间倒序返回
+`[start_ms, end_ms)` 内的同桶读数。窗口键与 `quota_details` 相同，区间最长 366 天。每个样本包含
+`observed_at_ms`、`used_percent` 和当时观测到的 `reset_at_ms`、`plan_type`，后两项可为 `null`。
+首次省略游标；即使 `samples` 为空，只要有 `next_cursor` 就沿用原查询继续。末页的 `baseline` 是起点前最近的同桶读数，
+最多向前查一个等长区间。例如查最近 48 小时，基线最多再向前找 48 小时；没有基线时返回 `null`
+
+历史来自保留的已结束请求，不含独立额度刷新。Provider 未提供可解析的同桶观测时没有样本。
+缺样不代表零；跨重置或套餐变更不能直接相减。这是观测记录，不是精确消耗账本。
+分页不冻结数据，长区间建议在后台读取并复用结果
 
 `verify_client` 使用当前请求设置和原认证计划，包含外部 principal 到 Key 的映射；没有 HTTP 入口时使用当前发布配置。
 认证可以调用认证插件，继续扣减父预算并响应取消；验证成功不做推理准入、账号租约、使用记录或计费。
@@ -654,8 +665,19 @@ middleware 的 `next` 最多调用一次，重试与额外模型执行通过独�
 ### 路由、调度与观察
 
 `policy.route_model` 和 `policy.schedule_account` 只提出决定，宿主随后复核 Key 规则、模型能力、账号资格和租约。
-`scheduler` 必须声明 `version: 3`。`candidates` 已按 Key 范围、模型权限、账号状态和原生续写绑定收窄，
+`scheduler` 必须声明 `version: 4`。`candidates` 已按 Key 范围、模型权限、账号状态和原生续写绑定收窄，
 同时包含暂时繁忙但可以等待的账号；`available` 表示本次可以立即尝试租约，不保证租约一定成功
+
+每个候选的 `session_bound` 表示它是否为 Provider 已查到的本次会话绑定账号。仅匹配缓存偏好不算会话绑定。`role` 表示本轮选号如何使用它：
+
+| `role` | 含义 |
+| --- | --- |
+| `ordinary` | 普通候选。宽松模式下已有绑定也可以是普通候选 |
+| `preferred` | 内置选号优先考虑，允许选择其他账号。xAI 的会话偏好由评分得出，不表示已有持久绑定 |
+| `follow_only` | 委托内置选号时只跟随这个绑定账号，插件仍可显式选择其他合格候选 |
+| `pinned` | 本次尝试已固定账号，例如原生续接；插件不能改选其他账号 |
+
+关系只标在本轮可见候选上，繁忙不抹去关系，候选中没有绑定标记也不能断定是新会话。角色不授予账号资格，不代表已取得租约
 
 - `Pick { account_id }` 显式选号，只能指定 `available: true` 的候选
 - `Delegate` 将完整候选交给宿主现有调度
