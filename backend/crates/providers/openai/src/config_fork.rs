@@ -12,6 +12,8 @@ const REQUEST_POLICY_KEY: &str = "cpr_openai_fork_policy";
 #[serde(deny_unknown_fields)]
 pub struct OpenAiForkSettings {
     #[serde(default)]
+    pub happy_first_token: crate::config::CodexHappyFirstToken,
+    #[serde(default)]
     pub request_compatibility: crate::config::CodexRequestCompatibility,
     pub model_unsupported_cooldown_seconds: u64,
     pub ws_opening_recovery: CodexWsOpeningRecovery,
@@ -22,6 +24,7 @@ pub struct OpenAiForkSettings {
 impl From<&OpenAiConfig> for OpenAiForkSettings {
     fn from(config: &OpenAiConfig) -> Self {
         Self {
+            happy_first_token: config.happy_first_token.clone(),
             request_compatibility: config.request_compatibility,
             model_unsupported_cooldown_seconds: config.model_unsupported_cooldown_seconds,
             ws_opening_recovery: config.ws_opening_recovery,
@@ -61,6 +64,7 @@ impl OpenAiForkSettings {
 
     pub fn apply(self, config: &mut OpenAiConfig) -> Result<(), OpenAiConfigError> {
         let mut candidate = config.clone();
+        candidate.happy_first_token = self.happy_first_token;
         candidate.request_compatibility = self.request_compatibility;
         candidate.model_unsupported_cooldown_seconds = self.model_unsupported_cooldown_seconds;
         candidate.ws_opening_recovery = self.ws_opening_recovery;
@@ -69,6 +73,7 @@ impl OpenAiForkSettings {
         candidate.resolve_and_validate(std::path::Path::new("."))?;
         config.model_unsupported_cooldown_seconds = candidate.model_unsupported_cooldown_seconds;
         config.request_compatibility = candidate.request_compatibility;
+        config.happy_first_token = candidate.happy_first_token;
         config.ws_opening_recovery = candidate.ws_opening_recovery;
         config.ws_preconnect = candidate.ws_preconnect;
         config.ws_response_recovery = candidate.ws_response_recovery;

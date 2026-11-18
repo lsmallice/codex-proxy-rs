@@ -57,6 +57,8 @@ pub struct OpenAiConfig {
     #[serde(default)]
     pub request_compatibility: CodexRequestCompatibility,
     #[serde(default)]
+    pub happy_first_token: CodexHappyFirstToken,
+    #[serde(default)]
     pub residency: Option<String>,
     #[serde(default)]
     pub account_routing_override: Option<String>,
@@ -83,6 +85,7 @@ impl OpenAiConfig {
         self.ws_opening_recovery.validate()?;
         self.ws_preconnect.validate()?;
         self.ws_response_recovery.validate()?;
+        self.happy_first_token.validate()?;
         if self.model_unsupported_cooldown_seconds > 86400 {
             return Err(OpenAiConfigError::InvalidField(
                 "openai.model_unsupported_cooldown_seconds",
@@ -154,10 +157,60 @@ impl Default for OpenAiConfig {
             model_unsupported_cooldown_seconds: default_model_unsupported_cooldown_seconds(),
             ws_response_recovery: CodexWsResponseRecovery::default(),
             request_compatibility: CodexRequestCompatibility::default(),
+            happy_first_token: CodexHappyFirstToken::default(),
             residency: None,
             account_routing_override: None,
             identity_secret_path: PathBuf::new(),
         }
+    }
+}
+
+/// 显式网关状态 delta，仅影响白名单 SSE 请求，不代表模型输出
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(default, deny_unknown_fields)]
+pub struct CodexHappyFirstToken {
+    pub enabled: bool,
+    pub all_client_keys: bool,
+    pub client_key_ids: Vec<String>,
+    pub min_delay_ms: u64,
+    pub max_delay_ms: u64,
+}
+
+impl Default for CodexHappyFirstToken {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            all_client_keys: false,
+            client_key_ids: Vec::new(),
+            min_delay_ms: 500,
+            max_delay_ms: 1000,
+        }
+    }
+}
+
+impl CodexHappyFirstToken {
+    fn validate(&self) -> Result<(), OpenAiConfigError> {
+        if self.min_delay_ms > self.max_delay_ms || self.max_delay_ms > 60000 {
+            return Err(OpenAiConfigError::InvalidField(
+                "openai.happy_first_token.delay_ms",
+            ));
+        }
+        let mut seen = std::collections::BTreeSet::new();
+        if self.client_key_ids.len() > 1000
+            || self.client_key_ids.iter().any(|id| {
+                id.is_empty()
+                    || id.len() > 128
+                    || !id
+                        .bytes()
+                        .all(|c| c.is_ascii_alphanumeric() || matches!(c, b'_' | b'-'))
+                    || !seen.insert(id)
+            })
+        {
+            return Err(OpenAiConfigError::InvalidField(
+                "openai.happy_first_token.client_key_ids",
+            ));
+        }
+        Ok(())
     }
 }
 

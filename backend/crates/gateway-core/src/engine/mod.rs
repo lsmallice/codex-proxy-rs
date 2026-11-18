@@ -288,6 +288,7 @@ impl ContinuationAttempt {
 /// Provider 每次执行可见的 request-local context
 #[derive(Debug, Clone)]
 pub struct RequestAttemptContext {
+    stream_notification_claimed: Arc<std::sync::atomic::AtomicBool>,
     account_error_protection: Option<account_protection::ProtectionContext>,
     request_body_limit: Option<usize>,
     lease_metadata: Option<Arc<crate::provider_ports::ProviderLeaseMetadata>>,
@@ -317,6 +318,14 @@ pub struct RequestAttemptContext {
 }
 
 impl RequestAttemptContext {
+    pub(crate) fn with_stream_notification_state(
+        mut self,
+        state: Arc<std::sync::atomic::AtomicBool>,
+    ) -> Self {
+        self.stream_notification_claimed = state;
+        self
+    }
+
     #[must_use]
     pub fn with_provider_policy(
         mut self,
@@ -414,6 +423,7 @@ impl RequestAttemptContext {
     #[must_use]
     pub fn new(request_id: ModelRequestId, client_api_key_ref: ClientApiKeyId) -> Self {
         Self {
+            stream_notification_claimed: Arc::default(),
             account_error_protection: None,
             response_control: None,
             request_body_limit: None,
@@ -653,6 +663,18 @@ impl AttemptContext {
     #[must_use]
     pub const fn client_transport(&self) -> execution::ClientTransport {
         self.request.client_transport
+    }
+
+    /// 单个请求共享一次非模型流提示名额，重试和换号不能重复发送
+    pub fn claim_stream_notification(&self) -> bool {
+        !self
+            .request
+            .stream_notification_claimed
+            .swap(true, std::sync::atomic::Ordering::AcqRel)
+    }
+
+    pub fn endpoint(&self) -> &str {
+        self.request.endpoint()
     }
 
     /// 原生响应可交付可替换前导事件；中间件可能改变其输出语义

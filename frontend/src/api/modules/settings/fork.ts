@@ -5,6 +5,7 @@ export interface ForkHttpRoute { method: string, path: string }
 export interface ForkSettingsValues {
   account_traffic: { enabled: boolean, burst: number, requests_per_second: number, max_wait_seconds: number, max_waiting: number }
   openai: {
+    happy_first_token: { enabled: boolean, all_client_keys: boolean, client_key_ids: string[], min_delay_ms: number, max_delay_ms: number }
     request_compatibility: { lite_context: boolean, store_false: boolean, json_object: boolean, min_output_tokens_16: boolean, tool_structure: boolean }
     model_unsupported_cooldown_seconds: number
     ws_opening_recovery: { enabled: boolean, max_retries: number, retry_delay_ms: number, http_fallback: boolean }

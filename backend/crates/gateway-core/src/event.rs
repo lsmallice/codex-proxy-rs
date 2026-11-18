@@ -809,6 +809,7 @@ pub enum GatewayEvent {
 /// 产生的多个 canonical facts 放在同一封套，可避免客户端重复收到该事件
 #[derive(Debug, Clone, PartialEq)]
 pub struct ProviderEvent {
+    local_control: bool,
     canonical: Vec<GatewayEvent>,
     wire: Option<Box<ProtocolWireEvent>>,
     observation: Option<Box<ProviderResponseObservation>>,
@@ -823,6 +824,7 @@ impl ProviderEvent {
     #[must_use]
     pub fn canonical(event: GatewayEvent) -> Self {
         Self {
+            local_control: false,
             canonical: vec![event],
             wire: None,
             observation: None,
@@ -844,6 +846,7 @@ impl ProviderEvent {
     #[must_use]
     pub fn wire(wire: ProtocolWireEvent) -> Self {
         Self {
+            local_control: false,
             canonical: Vec::new(),
             wire: Some(Box::new(wire)),
             observation: None,
@@ -858,6 +861,7 @@ impl ProviderEvent {
     #[must_use]
     pub fn canonical_with_wire(canonical: Vec<GatewayEvent>, wire: ProtocolWireEvent) -> Self {
         Self {
+            local_control: false,
             canonical,
             wire: Some(Box::new(wire)),
             observation: None,
@@ -872,6 +876,7 @@ impl ProviderEvent {
     #[must_use]
     pub fn observation(observation: ProviderResponseObservation) -> Self {
         Self {
+            local_control: false,
             canonical: Vec::new(),
             wire: None,
             observation: Some(Box::new(observation)),
@@ -888,6 +893,18 @@ impl ProviderEvent {
     pub fn with_replayable_prelude(mut self) -> Self {
         self.replayable_prelude = true;
         self
+    }
+
+    /// 本机生成的控制提示不进入上游观测、模型计量或语义输出屏障
+    /// 上游同名 wire 不会获得此标记，中间件改写仍关闭可重放边界
+    pub fn local_control(wire: ProtocolWireEvent) -> Self {
+        let mut event = Self::wire(wire).with_replayable_prelude();
+        event.local_control = true;
+        event
+    }
+
+    pub const fn is_local_control(&self) -> bool {
+        self.local_control
     }
 
     #[must_use]

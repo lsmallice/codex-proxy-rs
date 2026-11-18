@@ -916,6 +916,28 @@ HTTP 请求和每轮 WS response.create 在执行前冻结策略，已开始的�
 配置损坏会阻止启动，不静默忽略；停机后恢复备份，或移走覆盖文件以恢复 YAML 配置。
 恢复官方版本前可保留此文件，官方不会应用二开配置
 
+### 快乐首字状态提示
+
+设置 → 二开配置中的“快乐首字 · gateway.status.delta”与 YAML `openai.happy_first_token` 对应。
+默认关闭且指定 Key 列表为空；开启后须选择明确的 Client Key ID，或显式开启全部 Key，空列表不表示全站。
+这里只填写本地 Key ID，不填写明文 API 密钥。延迟以进入执行的单调时钟为起点，跨重试和换号共用一次发送名额。
+
+```yaml
+openai:
+  happy_first_token:
+    enabled: false
+    all_client_keys: false
+    client_key_ids: []
+    min_delay_ms: 500
+    max_delay_ms: 1000
+```
+
+延迟满足 `0 <= min_delay_ms <= max_delay_ms <= 60000`，两值相等为固定延迟，否则按请求 ID 稳定抽取区间值，不在重试时重新抽取。
+Key ID 去重且最多 1000 项，单项 1–128 个字母、数字、下划线或连字符；保存到二开配置后只影响新请求，不需重启。
+实际发送必须晚于真实前导，并优先发送已到达的真实输出；500ms 设置不保证未连接上游的请求也在 500ms 获得提示。
+事件不是模型正文、Token 或成功结果，但可能提前下游 TTFT 并让下游停止重试，详见 [Responses 合同](../docs/api.md#responses-请求与传输)。
+关闭此开关不会中断在途流，原始 HTTP 错误、流内错误、响应归属和 `x-codex-turn-state` 保持原链路。
+
 ### 原生 Responses 请求兼容
 
 `openai.request_compatibility` 的五个开关默认关闭，在二开配置页面保存后对新请求生效。

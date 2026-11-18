@@ -471,6 +471,14 @@ Codex 的 review 等子代理请求仍使用 `/v1/responses`，并通过 `x-open
 
 ### Responses 请求与传输
 
+`openai.happy_first_token` 可显式启用 OAuth Responses SSE 的 `gateway.status.delta` 网关连接提示。
+只在真实可替换前导已交付后等待所配置的请求级延迟，每个请求最多一次；正文、推理、工具输出、未知事件、终态或取消先到时不发送。
+下游原生 WS、非流式请求、Chat/Messages 适配、Guardian 和带模型中间件/隐私处理的请求不参与。
+提示的 `delta` 固定为 `upstream_connected`，`metadata.gateway_status` 同值，不包含响应 ID、账号、额度或用量。
+本机提示带内部来源标记，不进入上游观测、首正文计时或计费，不扩大 CPR 原有重试授权；上游同名事件不获得此标记。
+部分下游会按非空 `.delta` 提前统计 TTFT，并因此关闭自己的重试/换号机会；这不是模型推理加速，启用前须验证对应客户端。
+配置范围、默认值与热发布见[部署说明](../deploy/README.md#快乐首字状态提示)。
+
 部署可显式开启[响应前导与续接恢复](../deploy/README.md#响应前导与续接恢复)。
 该策略只在未交付实质输出时按 `max_retries` 进行同账号有界补发（默认 1 次，0–5），
 不保证上游未执行或不会重复计费；完整历史续接恢复独立限制为一次。

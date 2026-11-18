@@ -358,6 +358,10 @@ Provider 可为模型提供来源账号集合；Core 在公开目录查询时结
 `engine::observation` 统一维护单次响应的用量、费用、时间和响应 ID，并负责重试前清理；协调器继续
 独占发送、提交、重试和终结顺序。响应观测与累计费用分别遵守[请求记录](#请求记录与交付)和[Client Key 结算](#client-key-限额与结算)的合同
 
+可选连接提示由 OpenAI Provider 根据真实前导与请求冻结策略生成，复用原生事件通道串行交付，不额外启动写 socket 的任务。
+Core 的单次执行共享提示名额，跨 attempt 只能消费一次；本机控制事件使用类型标记隔离上游观测和发送事实，不通过事件名推断来源。
+提示不附加 canonical 用量或响应完成事实，原生重试仍检查发送、语义输出与续接边界；下游统计及重试兼容风险见 [Responses 合同](api.md#responses-请求与传输)。
+
 ### 3.4 前端模块职责
 
 `frontend/src` 持有应用状态和业务交互，基础组件与主题算法由 `@codex-proxy/ui` 提供，组件目录与合同见 [UI 组件架构](../modules/ui/playground/guide/architecture.md)：

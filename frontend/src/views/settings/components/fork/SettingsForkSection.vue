@@ -17,6 +17,21 @@ const view = computed({
 })
 const selectedPlugin = ref<string>()
 const selectedMaintenance = ref<string>()
+const notificationKey = ref('')
+const validNotificationKey = computed(() => /^[\w-]{1,128}$/.test(notificationKey.value.trim()))
+function addNotificationKey() {
+  if (disabled.value || !displayed.value || !validNotificationKey.value)
+    return
+  const ids = displayed.value.openai.happy_first_token.client_key_ids
+  if (!ids.includes(notificationKey.value.trim()) && ids.length < 1000)
+    ids.push(notificationKey.value.trim())
+  notificationKey.value = ''
+}
+function removeNotificationKey(id: string) {
+  if (disabled.value || !displayed.value)
+    return
+  displayed.value.openai.happy_first_token.client_key_ids = displayed.value.openai.happy_first_token.client_key_ids.filter(value => value !== id)
+}
 const maintenanceOptions = computed(() => plugins.value.filter(p => displayed.value?.plugins.maintenance_intervals_seconds[p.id] === undefined).map(p => ({ label: p.name, value: p.id })))
 function addMaintenance() {
   if (!selectedMaintenance.value || !displayed.value || disabled.value)
@@ -181,6 +196,43 @@ defineExpose({ hasChanges })
           <ForkNumber v-model="displayed.account_traffic.max_wait_seconds" :disabled="disabled || !displayed.account_traffic.enabled" :label="t('forkSettings.accountTraffic.wait')" :min="1" :max="30" :unit="t('forkSettings.seconds')" />
           <ForkNumber v-model="displayed.account_traffic.max_waiting" :disabled="disabled || !displayed.account_traffic.enabled" :label="t('forkSettings.accountTraffic.queue')" :min="1" :max="1024" />
         </div>
+      </section>
+      <section>
+        <h2 class="text-z-base font-semibold">
+          {{ t('forkSettings.happyFirstToken') }}
+          <ZTag type="success" class="ml-2">
+            {{ t('forkSettings.hotApply') }}
+          </ZTag>
+        </h2>
+        <div class="mt-4 grid max-w-6xl gap-4.5 sm:grid-cols-2 xl:grid-cols-3">
+          <ZFormItem :label="t('forkSettings.happyFirstToken')">
+            <ZSwitch v-model="displayed.openai.happy_first_token.enabled" :disabled="disabled" :label="t('forkSettings.enable')" />
+          </ZFormItem>
+          <ForkNumber v-model="displayed.openai.happy_first_token.min_delay_ms" :disabled="disabled" :label="t('forkSettings.happyMinDelay')" :min="0" :max="60000" :unit="t('forkSettings.milliseconds')" />
+          <ForkNumber v-model="displayed.openai.happy_first_token.max_delay_ms" :disabled="disabled" :label="t('forkSettings.happyMaxDelay')" :min="displayed.openai.happy_first_token.min_delay_ms" :max="60000" :unit="t('forkSettings.milliseconds')" />
+          <ZFormItem :label="t('forkSettings.happyAllKeys')">
+            <ZSwitch v-model="displayed.openai.happy_first_token.all_client_keys" :disabled="disabled" :label="t('forkSettings.enable')" />
+          </ZFormItem>
+          <ZFormItem v-if="!displayed.openai.happy_first_token.all_client_keys" :label="t('forkSettings.happyKeyIds')" class="sm:col-span-2">
+            <div class="flex min-w-0 items-center gap-2">
+              <ZInput v-model="notificationKey" :disabled="disabled" :placeholder="t('forkSettings.happyKeyPlaceholder')" :aria-label="t('forkSettings.happyKeyIds')" @keydown.enter.prevent="addNotificationKey" />
+              <ZIconButton :disabled="disabled || !validNotificationKey || displayed.openai.happy_first_token.client_key_ids.length >= 1000" :aria-label="t('forkSettings.happyAddKey')" :title="t('forkSettings.happyAddKey')" @click="addNotificationKey">
+                <Plus class="size-4" />
+              </ZIconButton>
+            </div>
+            <ul class="mt-2 space-y-1">
+              <li v-for="id in displayed.openai.happy_first_token.client_key_ids" :key="id" class="flex min-w-0 items-center justify-between gap-2">
+                <span class="min-w-0 break-all font-mono text-z-sm">{{ id }}</span>
+                <ZIconButton :disabled="disabled" :aria-label="t('forkSettings.happyRemoveKey', { id })" :title="t('forkSettings.happyRemoveKey', { id })" @click="removeNotificationKey(id)">
+                  <Trash2 class="size-4" />
+                </ZIconButton>
+              </li>
+            </ul>
+          </ZFormItem>
+        </div>
+        <p class="mt-3 text-z-sm text-z-warning">
+          {{ t('forkSettings.happyRisk') }}
+        </p>
       </section>
       <section>
         <h2 class="text-z-base font-semibold">

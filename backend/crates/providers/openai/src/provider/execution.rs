@@ -391,6 +391,7 @@ struct RawJsonEndpointRequest {
 }
 
 pub(super) struct ColdResponse {
+    pub(super) happy_first_token: crate::config::CodexHappyFirstToken,
     pub(super) client: CodexBackendClient,
     pub(super) installation_id: String,
     pub(super) response_origin: Url,
@@ -818,6 +819,7 @@ fn image_response_metering(
 
 pub(super) fn cold_response_stream(response: ColdResponse) -> EventStream {
     let ColdResponse {
+        happy_first_token,
         client,
         installation_id,
         response_origin,
@@ -896,8 +898,10 @@ pub(super) fn cold_response_stream(response: ColdResponse) -> EventStream {
         let mut stream_recovery = None;
         let mut prior_observation: Option<OpenAiResponseObservationState> = None;
         let mut client_events = ClientEventDelivery::new(context.allows_replayable_prelude());
+        let mut notification = happy_first_token::Notification::new(&happy_first_token, &context, &request, &active_account);
         let initial_turn_state = session_capture.as_ref().and_then(|capture| capture.turn_state.clone());
         'responses: loop {
+            notification.reset_readiness();
             let response = response_recovery::create(
                 &client,
                 &request,
@@ -1134,6 +1138,12 @@ pub(super) fn cold_response_stream(response: ColdResponse) -> EventStream {
                             Err(map_stream_error(error))
                         }
                         None => Ok(None),
+                    },
+                    () = notification.wait() => {
+                        if let Some(event) = notification.take(&context) {
+                            yield event;
+                        }
+                        continue;
                     },
                 };
                 let next = match next {
@@ -1399,6 +1409,7 @@ pub(super) fn cold_response_stream(response: ColdResponse) -> EventStream {
                     return;
                 }
                 let events = client_events.forward(events, timing_signals, completed);
+                notification.observe(&events, client_events.replay_closed());
                 if client_events.replay_closed() { recovery.close(); }
                 for event in events {
                     yield event;
