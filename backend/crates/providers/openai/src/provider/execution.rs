@@ -440,10 +440,6 @@ pub(super) struct OpenAiSessionState {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(super) oauth_identity: Option<String>,
     pub(super) conversation_id: Option<String>,
-    #[serde(default)]
-    pub(super) turn_state: Option<String>,
-    #[serde(default)]
-    pub(super) client_turn_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(super) reasoning_effort_override: Option<String>,
     pub(super) continuation_scope: OpenAiContinuationScope,
@@ -464,19 +460,11 @@ pub(super) struct OpenAiSessionCapture {
     pub(super) credential_revision: Option<u64>,
     pub(super) oauth_identity: Option<String>,
     pub(super) conversation_id: Option<String>,
-    pub(super) turn_state: Option<String>,
-    pub(super) client_turn_id: Option<String>,
     pub(super) reasoning_effort_override: Option<String>,
     pub(super) response_store: bool,
     pub(super) oversized_http: bool,
     pub(super) continuation_scope: Option<OpenAiContinuationScope>,
     pub(super) history: Option<response_recovery::HistoryProof>,
-}
-
-pub(super) fn same_client_turn(previous: Option<&str>, current: Option<&str>) -> bool {
-    previous
-        .zip(current)
-        .is_some_and(|(previous, current)| !previous.is_empty() && previous == current)
 }
 
 pub(super) fn decode_openai_session_state(request: &GenerateRequest) -> Option<OpenAiSessionState> {
@@ -514,8 +502,6 @@ fn encode_openai_session_capture(
         credential_revision: capture.credential_revision,
         oauth_identity: capture.oauth_identity.clone(),
         conversation_id: capture.conversation_id.clone(),
-        turn_state: capture.turn_state.clone(),
-        client_turn_id: capture.client_turn_id.clone(),
         reasoning_effort_override: capture.reasoning_effort_override.clone(),
         continuation_scope,
         history: capture.history.clone(),
@@ -870,7 +856,7 @@ pub(super) fn cold_response_stream(response: ColdResponse) -> EventStream {
         } else { None };
         let precleaned = encrypted.as_ref().map_or(0, |attempt| attempt.preclean(&mut request));
         if precleaned > 0 {
-            if let Some(capture) = session_capture.as_mut() { capture.history = None; capture.turn_state = None; }
+            if let Some(capture) = session_capture.as_mut() { capture.history = None; }
             context.trace().record("transport.encrypted_history.preclean", json!({"items":precleaned}));
         }
         let cookie_header = build_cookie_header(lease.cookies())?;
@@ -899,7 +885,6 @@ pub(super) fn cold_response_stream(response: ColdResponse) -> EventStream {
         let mut prior_observation: Option<OpenAiResponseObservationState> = None;
         let mut client_events = ClientEventDelivery::new(context.allows_replayable_prelude());
         let mut notification = happy_first_token::Notification::new(&happy_first_token, &context, &request, &active_account);
-        let initial_turn_state = session_capture.as_ref().and_then(|capture| capture.turn_state.clone());
         'responses: loop {
             notification.reset_readiness();
             let response = response_recovery::create(
@@ -927,9 +912,6 @@ pub(super) fn cold_response_stream(response: ColdResponse) -> EventStream {
                 &mut history_replayed,
             )
             .await;
-            if history_replayed && let Some(capture)=session_capture.as_mut() {
-                capture.turn_state=None;
-            }
             // 任一原生恢复独占本轮预算，终态不再进入 Core 换号或其他传输恢复
             let finish_error = |error: ProviderError| {
                 let error = if payload_replayed {error.with_prior_payload_sent()} else {error};
@@ -1016,7 +998,6 @@ pub(super) fn cold_response_stream(response: ColdResponse) -> EventStream {
                 } else {
                     OpenAiContinuationScope::ReplayRequired
                 });
-                capture.turn_state = response.turn_state.clone().or(capture.turn_state.clone());
             }
             let mut observation_state = OpenAiResponseObservationState::from_backend_response(
                 &response,
@@ -1159,7 +1140,6 @@ pub(super) fn cold_response_stream(response: ColdResponse) -> EventStream {
                         };
                         let metadata_merge = merge_response_metadata_updates(
                             response_metadata_updates.as_ref(),
-                            &mut session_capture,
                             &mut observation_state,
                         )
                         .await;
@@ -1180,7 +1160,6 @@ pub(super) fn cold_response_stream(response: ColdResponse) -> EventStream {
                             // 原流释放后重新建连，继续持有原租约；不沿用失败响应的解码与路由状态
                             drop(body);
                             prior_observation = Some(observation_state);
-                            if let Some(capture) = session_capture.as_mut() { capture.turn_state = initial_turn_state.clone(); }
                             opening_recovery_used = true;
                             payload_replayed = true;
                             continue 'responses;
@@ -1246,7 +1225,7 @@ pub(super) fn cold_response_stream(response: ColdResponse) -> EventStream {
                     drop(body);
                     prior_observation = Some(observation_state);
                     request = repaired;
-                    if let Some(capture) = session_capture.as_mut() { capture.history = None; capture.turn_state = None; }
+                    if let Some(capture) = session_capture.as_mut() { capture.history = None; }
                     opening_recovery_used = true;
                     payload_replayed = true;
                     continue 'responses;
@@ -1272,7 +1251,6 @@ pub(super) fn cold_response_stream(response: ColdResponse) -> EventStream {
                 };
                 let metadata_merge = merge_response_metadata_updates(
                     response_metadata_updates.as_ref(),
-                    &mut session_capture,
                     &mut observation_state,
                 )
                 .await;
@@ -1493,7 +1471,6 @@ pub(super) fn cold_response_stream(response: ColdResponse) -> EventStream {
             }
             let metadata_changed = merge_response_metadata_updates(
                 response_metadata_updates.as_ref(),
-                &mut session_capture,
                 &mut observation_state,
             )
             .await
@@ -1563,12 +1540,8 @@ pub(super) fn cold_response_stream(response: ColdResponse) -> EventStream {
 
 async fn merge_response_metadata_updates(
     updates: Option<&CodexResponseMetadataUpdates>,
-    session_capture: &mut Option<OpenAiSessionCapture>,
     observation_state: &mut OpenAiResponseObservationState,
 ) -> Option<bool> {
     let turn_state = updates?.lock().await.turn_state.take()?;
-    if let Some(capture) = session_capture.as_mut() {
-        capture.turn_state = Some(turn_state.clone());
-    }
     Some(observation_state.merge_client_header("x-codex-turn-state", &turn_state))
 }

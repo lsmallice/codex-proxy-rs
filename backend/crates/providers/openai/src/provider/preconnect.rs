@@ -54,8 +54,6 @@ impl CodexProvider {
         next.parent_thread_id = request.parent_thread_id.clone();
         next.downstream_websocket_connection_id =
             request.downstream_websocket_connection_id.clone();
-        next.beta_features = request.beta_features.clone();
-        next.include_timing_metrics = request.include_timing_metrics.clone();
         next.version = request.version.clone();
         next.memgen_request = request.memgen_request.clone();
         next.passthrough_headers = request.passthrough_headers.clone();

@@ -569,9 +569,13 @@ Images 的 `x-codex-image-turn-id` 和 Desktop 自动 Git 上下文的 `clientUs
 续接 response ID、历史 item/call ID、业务正文和未知扩展不参与映射，
 该处理减少显式追踪标识的跨账号复用，不保证会话内容或业务 metadata 无法关联
 
-`x-codex-turn-state` 是上游返回的轮次路由 token，同一轮内应原样回传，开始新轮次时清除。
-全量请求没有 `previous_response_id` 或缺少本地归属记录时，代理原样保留客户端回传值；
-明确换账号或可信续接状态表明不属于同一轮时清除。该 token 不使其他账号状态字段或未知 `previous_response_id` 成为可信续接上下文
+`x-codex-turn-metadata` 请求头与 `client_metadata` 内的同名字段分别按账号处理并转发。
+WS 握手的轮次元数据头只随首次请求转发，后续帧在正文中携带本轮元数据。网关优先按当前帧识别普通对话和压缩请求。
+`x-codex-beta-features` 和 `x-responsesapi-include-timing-metrics` 按原始请求头透传
+
+`x-codex-turn-state` 是上游签发的轮次路由 token。客户端在同一轮原样回传，新轮次省略。
+网关转发当前请求提供的值，明确换账号时清除。WS 握手携带的值只用于首次请求，当前帧提供的值优先。
+续接 response ID 及其他账号状态的归属独立校验
 
 #### 正文兼容
 
@@ -1349,7 +1353,8 @@ OpenAI OAuth 账号的 `capabilities.quotaSettingsSupported` 为真。通过 `PO
 
 账号视图和 Dashboard 账号概览中的 `planType` 保留原始套餐值；`planTypeDisplay` 使用 Provider 提供的最终名称，
 前端直接展示。OpenAI 的 `prolite`、`pro`、`promax` 分别显示为 `ProLite`、`Pro`、`ProMax`；
-其余已知套餐使用官方名称，未知 OpenAI 套餐保留原值。
+其余已知 OpenAI 套餐使用 Codex `/status` 的名称，例如 `self_serve_business_prolite` 显示为 `Business Premium`，
+`self_serve_business_usage_based` 显示为 `Business`。未知 OpenAI 套餐保留原值。
 展示名称保留空格和括号，未提供专属名称规则的 Provider 使用通用大驼峰格式。
 OpenAI 主动额度刷新和正常响应携带的明确套餐会同步到账号，支持升级与降级；
 空值或 `unknown` 不覆盖已有套餐，同族泛化值（如 `team`）保留已知的具体套餐子类型。
@@ -2641,7 +2646,8 @@ Token，范围 0～1000000、最多四位小数。`"0"` 表示免费，缺少整
 
 `bands` 可用键为 `standard`、`fast`、`ultrafast`、`flex`、`long_standard`、`long_fast`、`long_ultrafast`、`long_flex`、`image`。
 OpenAI 长上下文为输入超过 272000 Token，xAI 为输入达到 200000 Token；仍按 Provider 支持的
-模型与服务档位判断是否能估算。OpenAI 内置 Ultrafast 价目覆盖 `gpt-6-astra` 与 `gpt-6.1-sol`。
+模型与服务档位判断是否能估算。OpenAI 内置 Ultrafast 价目覆盖 `gpt-6-astra`、`gpt-6.1-sol`、
+`gpt-6.2-astra` 和 `gpt-6.2-sol`，均按对应上下文标准价的 6 倍估算。
 xAI 不接受 `flex`、`long_flex`、`ultrafast`、`long_ultrafast`、`image`。图像端点的 `standard`
 用于文本输入，`image` 用于图像 Token；不能用文本输出单价替代图像输出单价。用量无法完整拆分时不估算
 
@@ -3010,7 +3016,7 @@ Dashboard 的 `accountUsage[]` 返回稳定指标 `metric=requests|tokens`、可
 Dashboard 默认 `period=today`，用量、诊断和错误查询默认 `period=7d`，范围参数遵循[页面时间合同](#页面时间合同)。
 Dashboard 返回原始 `asOf` 及 `asOfDisplay`，作为当前数据的查询锚点
 
-请求明细列表接受 `currentPage`、`pageSize`、时间范围、`provider`、`clientApiKeyName`、`accountName`、`model` 和 `status`。
+请求明细列表接受 `currentPage`、`pageSize`、时间范围、`provider`、`clientApiKeyName`、`accountSearch`、`model` 和 `status`。
 汇总和洞察接受时间范围与 `provider`；性能和成本另要求 `metric`，诊断另接受 `dimension`、`model` 和 `statusCode`。
 各接口拒绝未知参数，明细筛选不改变顶部统计范围
 
@@ -3080,8 +3086,8 @@ HTTP SSE 请求可能在返回 HTTP 200 后流内失败；WebSocket 已升级时
 
 管理端请求列表与详情保留 `requestedModel`（客户端请求）与 `upstreamModel`（网关发送）
 
-请求明细的 `clientApiKeyName`、`accountName` 按字面量包含匹配请求保存的历史名称快照，区分大小写，
-不解析为 ID，也不依赖当前配置是否存在。`model` 按字面量包含匹配请求模型或上游模型，`%`、`_` 和 `\` 按普通字符处理
+请求明细的 `clientApiKeyName` 匹配 Key 名称，`accountSearch` 匹配账号名称或邮箱。
+这些筛选仅使用历史快照，可与时间、状态等条件组合。`model` 匹配请求模型或上游模型。以上文本筛选均按区分大小写的字面量包含匹配，`%`、`_` 和 `\` 按普通字符处理
 
 运维错误列表的 `search` 使用字面量包含匹配，`%`、`_` 和 `\` 按普通字符处理，不支持密钥值或可见前缀搜索。
 请求详情通过 `/api/admin/usage/records/detail?id=...` 查询

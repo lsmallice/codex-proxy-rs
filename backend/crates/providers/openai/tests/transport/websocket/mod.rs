@@ -2288,8 +2288,6 @@ async fn codex_backend_client_should_use_websocket_when_previous_response_id_is_
                 request_id: "req_ws_client",
                 turn_state: None,
                 turn_metadata: None,
-                beta_features: None,
-                include_timing_metrics: None,
                 version: None,
                 codex_window_id: None,
                 parent_thread_id: None,
@@ -2298,7 +2296,6 @@ async fn codex_backend_client_should_use_websocket_when_previous_response_id_is_
                 session_id: None,
                 thread_id: None,
                 client_request_id: None,
-                turn_id: None,
                 account_selection: Default::default(),
             },
         )
