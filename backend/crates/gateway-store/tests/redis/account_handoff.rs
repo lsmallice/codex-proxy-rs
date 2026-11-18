@@ -49,15 +49,7 @@ fn state() -> AccountHandoff {
     .unwrap()
 }
 
-#[tokio::test]
-async fn handoff_group_redis_join_cas_and_shared_cap_survive_restarts() {
-    use gateway_store::redis::{
-        CredentialBoundedLeaseAcquisition, CredentialBoundedLeaseRequest, CredentialLeaseScope,
-        RedisCredentialLeaseRepository,
-    };
-    let Some((store, connection, namespace)) = store_connection().await else {
-        return;
-    };
+fn transfer_group() -> AccountTransferGroup {
     let member = |id: &str, baseline, ceiling, remaining| TransferMember {
         id: id.into(),
         name: id.into(),
@@ -70,7 +62,7 @@ async fn handoff_group_redis_join_cas_and_shared_cap_survive_restarts() {
         available: true,
         terminal: false,
     };
-    let mut g = AccountTransferGroup {
+    AccountTransferGroup {
         id: Uuid::new_v4().to_string(),
         group_id: "grp_pool".into(),
         automatic: false,
@@ -95,7 +87,19 @@ async fn handoff_group_redis_join_cas_and_shared_cap_survive_restarts() {
         observed_failures: 0,
         finished: false,
         message: String::new(),
+    }
+}
+
+#[tokio::test]
+async fn handoff_group_redis_join_cas_and_shared_cap_survive_restarts() {
+    use gateway_store::redis::{
+        CredentialBoundedLeaseAcquisition, CredentialBoundedLeaseRequest, CredentialLeaseScope,
+        RedisCredentialLeaseRepository,
     };
+    let Some((store, connection, namespace)) = store_connection().await else {
+        return;
+    };
+    let mut g = transfer_group();
     g.rebalance();
     assert!(store.save_transfer_group(g.clone(), 0, 0).await.unwrap());
     assert_eq!(store.warmups().await.unwrap().len(), 1);
@@ -125,7 +129,12 @@ async fn handoff_group_redis_join_cas_and_shared_cap_survive_restarts() {
             panic!("initial capacity missing")
         }
     }
-    g.new.push(member("acct_n2", 0, 50, 9000));
+    let mut second = g.new[0].clone();
+    second.id = "acct_n2".into();
+    second.name = second.id.clone();
+    g.new.push(second);
+    // 管理员缩小保护容量后，旧在途仍占共享上限，不能给新增成员重复放行
+    g.new.iter_mut().for_each(|m| m.ceiling = 25);
     g.rebalance();
     assert!(store.save_transfer_group(g.clone(), 1, 0).await.unwrap());
     assert!(matches!(
@@ -208,6 +217,10 @@ async fn handoff_group_redis_join_cas_and_shared_cap_survive_restarts() {
     retry.revision = 0;
     retry.automatic = true;
     retry.policy_revision = 1;
+    let mut siblings = retry.clone();
+    siblings.old = vec![siblings.new.remove(0)];
+    // 原老号退出后，两个承接账号不能自动被拼成新的 A -> B 交接
+    assert!(!recreated.save_transfer_group(siblings, 0, 0).await.unwrap());
     // 即使调用方仍使用取消前的候选快照，原子回执也禁止自动重建
     assert!(
         !recreated
@@ -224,6 +237,59 @@ async fn handoff_group_redis_join_cas_and_shared_cap_survive_restarts() {
     );
     retry.finished = true;
     assert!(recreated.save_transfer_group(retry, 1, 0).await.unwrap());
+    for guard in guards {
+        guard.release().await.unwrap();
+    }
+}
+
+#[tokio::test]
+async fn handoff_group_redis_accepts_growth_without_multiplying_per_account_protection() {
+    use gateway_store::redis::{
+        CredentialBoundedLeaseAcquisition, CredentialBoundedLeaseRequest, CredentialLeaseScope,
+        RedisCredentialLeaseRepository,
+    };
+    let Some((store, connection, namespace)) = store_connection().await else {
+        return;
+    };
+    let mut group = transfer_group();
+    let mut second = group.new[0].clone();
+    second.id = "acct_n2".into();
+    second.name = second.id.clone();
+    group.new.push(second);
+    group.rebalance();
+    assert_eq!(group.budget, 50);
+    assert!(store.save_transfer_group(group, 0, 0).await.unwrap());
+    let repo = RedisCredentialLeaseRepository::new(connection, &namespace).unwrap();
+    let attempts = (0..160).map(|index| {
+        let repo = &repo;
+        async move {
+            let account = if index % 2 == 0 { "acct_n1" } else { "acct_n2" };
+            let result = repo
+                .try_acquire_bounded_lease_with_metadata(
+                    &CredentialBoundedLeaseRequest {
+                        scope: CredentialLeaseScope::ProviderAccount,
+                        resource_id: account.into(),
+                        owner_id: Uuid::new_v4().to_string(),
+                        max_concurrent: 0,
+                        ttl: Duration::from_secs(60),
+                    },
+                    None,
+                )
+                .await
+                .unwrap();
+            (account, result)
+        }
+    });
+    let mut counts = std::collections::BTreeMap::new();
+    let mut guards = Vec::new();
+    for (id, result) in futures::future::join_all(attempts).await {
+        if let CredentialBoundedLeaseAcquisition::Acquired(guard) = result {
+            *counts.entry(id).or_insert(0) += 1;
+            guards.push(guard);
+        }
+    }
+    assert_eq!(counts.get("acct_n1"), Some(&50));
+    assert_eq!(counts.get("acct_n2"), Some(&50));
     for guard in guards {
         guard.release().await.unwrap();
     }

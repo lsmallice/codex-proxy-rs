@@ -2318,6 +2318,7 @@ impl Provider for PolicySelectingProvider {
         )
         .with_scheduling(None, AccountWeight::new(100).unwrap());
         let candidates = [AccountCandidate {
+            pool_priority: None,
             transfer: None,
             warmup_limit: None,
             handoff: None,

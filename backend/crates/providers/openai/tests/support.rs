@@ -242,6 +242,14 @@ impl MemoryAccountStore {
             .with_scheduling(concurrency_limit, weight);
     }
 
+    pub(crate) fn set_created_at(&self, id: &str, at: SystemTime) {
+        let mut accounts = self.accounts.lock().unwrap();
+        let stored = accounts
+            .get_mut(&ProviderAccountId::new(id).unwrap())
+            .unwrap();
+        stored.account = stored.account.clone().with_created_at(at);
+    }
+
     pub(crate) fn set_egress(
         &self,
         id: &str,
@@ -971,6 +979,8 @@ fn rebuild_account(current: &ProviderAccount, rebuild: AccountRebuild) -> Provid
 
 #[derive(Default)]
 pub(crate) struct TestLeaseCoordinator {
+    pub(crate) handoff_policy: Mutex<gateway_core::account::AccountHandoffPolicy>,
+    pub(crate) warmups: Mutex<BTreeMap<ProviderAccountId, Option<u32>>>,
     pub(crate) requests: Mutex<Vec<ProviderSchedulingLeaseRequest>>,
     pub(crate) busy: Mutex<bool>,
     pub(crate) busy_accounts: Mutex<BTreeSet<ProviderAccountId>>,
@@ -1023,7 +1033,12 @@ impl ProviderLeasePort for TestLeaseCoordinator {
                 .expect("round robin cursor lock");
             let current = *cursor;
             *cursor = cursor.wrapping_add(1);
-            Ok(ProviderSchedulingState::new(signals, current))
+            Ok(ProviderSchedulingState::new(signals, current)
+                .with_handoff_policy(
+                    self.handoff_policy.lock().unwrap().clone(),
+                    Default::default(),
+                )
+                .with_warmups(self.warmups.lock().unwrap().clone()))
         })
     }
 

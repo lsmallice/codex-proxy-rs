@@ -1162,6 +1162,7 @@ impl CodexCredentialSelector {
                         .with_rate_limit(rate_limits.get(account.id()).copied().flatten())
                         .with_runtime_health(health.0, health.1);
                     AccountCandidate {
+                        pool_priority: None,
                         transfer: None,
                         warmup_limit: None,
                         handoff: None,
@@ -1242,6 +1243,11 @@ impl CodexCredentialSelector {
                 .flat_map(|g| g.state.capacities())
                 .collect();
             for candidate in &mut candidates {
+                candidate.pool_priority = if !diagnostic && !request.guardian {
+                    super::transfer::pool_priority(candidate, &scheduling, SystemTime::now())
+                } else {
+                    None
+                };
                 candidate.transfer = if !request.guardian {
                     transfer_capacities
                         .get(candidate.account.id().as_str())
@@ -1288,14 +1294,14 @@ impl CodexCredentialSelector {
                         SystemTime::now(),
                     )
                 });
-            // 交接组内的软亲和可重新分配后续完整请求，固定续接和跟随线程仍保留原身份
+            // 消耗与承接层的软亲和可重选完整请求，固定续接和跟随线程保留原身份
             if pinned_account.is_none()
                 && !follow_only
                 && affinity_mode == AccountAffinity::Preferred
                 && affinity.preferred_account().is_some_and(|id| {
-                    candidates
-                        .iter()
-                        .any(|c| c.account.id() == id && c.transfer.is_some())
+                    candidates.iter().any(|c| {
+                        c.account.id() == id && (c.transfer.is_some() || c.pool_priority.is_some())
+                    })
                 })
             {
                 affinity.escape(AffinityEscapeReason::SchedulingPolicy);

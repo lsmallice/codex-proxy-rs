@@ -1,9 +1,57 @@
-//! 请求可用范围内的交接组角色识别与新增成员登记
+//! 请求范围内的交接成员登记及不依赖配对的消耗与均衡优先级
 use gateway_core::{account::*, provider_ports::*};
 use std::{
     collections::BTreeSet,
     time::{SystemTime, UNIX_EPOCH},
 };
+
+fn age_seconds(candidate: &AccountCandidate, now: u64) -> Option<u64> {
+    candidate
+        .account
+        .created_at()?
+        .duration_since(UNIX_EPOCH)
+        .ok()
+        .and_then(|at| now.checked_sub(at.as_millis() as u64))
+        .map(|elapsed| elapsed / 1000)
+}
+
+fn fresh_remaining(candidate: &AccountCandidate, now: u64) -> Option<u64> {
+    candidate
+        .account
+        .quota()
+        .observed_at()
+        .and_then(|at| at.duration_since(UNIX_EPOCH).ok())
+        .filter(|at| {
+            now.checked_sub(at.as_millis() as u64)
+                .is_some_and(|age| age <= 300000)
+        })
+        .and(candidate.signals.quota_remaining_rank)
+        .filter(|remaining| *remaining <= 10000)
+}
+
+pub(super) fn pool_priority(
+    candidate: &AccountCandidate,
+    scheduling: &ProviderSchedulingState,
+    now: SystemTime,
+) -> Option<AccountPoolPriority> {
+    let policy = scheduling.handoff_policy();
+    if !policy.enabled || !super::handoff::is_subscription(candidate) {
+        return None;
+    }
+    let config = policy.config.transfer_group.as_ref()?;
+    let protection = policy.config.new_account_protection.as_ref()?;
+    let now = now.duration_since(UNIX_EPOCH).ok()?.as_millis() as u64;
+    let protected = scheduling
+        .warmups()
+        .get(candidate.account.id())
+        .is_some_and(Option::is_some);
+    Some(AccountPoolPriority {
+        consume: age_seconds(candidate, now).is_some_and(|age| {
+            config.old_eligible(age, fresh_remaining(candidate, now), protected)
+        }),
+        reference_concurrency: protection.release_concurrency,
+    })
+}
 
 pub(super) async fn prepare(
     store: &dyn AccountHandoffStore,
@@ -35,23 +83,8 @@ pub(super) async fn prepare(
         .iter()
         .flat_map(|(id, h)| [id.as_str(), h.new_account_id.as_str()])
         .collect();
-    let age = |c: &AccountCandidate| {
-        c.account
-            .created_at()
-            .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
-            .map(|d| now.saturating_sub(d.as_millis() as u64) / 1000)
-    };
-    let fresh_remaining = |c: &AccountCandidate| {
-        c.account
-            .quota()
-            .observed_at()
-            .filter(|t| {
-                SystemTime::now()
-                    .duration_since(*t)
-                    .is_ok_and(|v| v.as_secs() <= 300)
-            })
-            .and(c.signals.quota_remaining_rank)
-    };
+    let age = |c: &AccountCandidate| age_seconds(c, now);
+    let fresh_remaining = |c: &AccountCandidate| fresh_remaining(c, now);
     let samples = ready
         .iter()
         .take(200)

@@ -2,6 +2,7 @@
 
 mod capacity;
 mod cooldown_reads;
+mod pool_scheduling;
 mod scheduling_projection;
 
 use std::collections::{BTreeMap, BTreeSet};

@@ -1,4 +1,4 @@
-//! 多账号交接组的角色、总转移预算及按承接能力均摊规则
+//! 多账号交接组的减载预算、承接容量与持续分层调度事实
 use super::{AccountHandoffConfig, AccountHandoffFeedback};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -130,6 +130,13 @@ pub struct AccountTransferCapacity {
     pub limit: u32,
     pub peers: Vec<String>,
 }
+
+/// 请求级优先级不创建交接关系，无限并发只借参考容量比较负载
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AccountPoolPriority {
+    pub consume: bool,
+    pub reference_concurrency: u32,
+}
 impl AccountTransferGroup {
     pub fn participant_ids(&self) -> impl Iterator<Item = &str> {
         self.old.iter().chain(&self.new).map(|m| m.id.as_str())
@@ -173,6 +180,25 @@ impl AccountTransferGroup {
             })
             .collect()
     }
+    fn receiver_capacity(&self) -> u32 {
+        self.new
+            .iter()
+            .filter(|m| m.available && !m.terminal)
+            .fold(0u32, |sum, m| sum.saturating_add(m.ceiling))
+    }
+    fn transferable_capacity(&self) -> u32 {
+        self.old
+            .iter()
+            .filter(|m| m.available || m.terminal)
+            .fold(0u32, |sum, m| {
+                sum.saturating_add(if m.terminal {
+                    m.baseline
+                } else {
+                    m.baseline
+                        .saturating_sub(self.config.minimum_old_concurrency)
+                })
+            })
+    }
     pub fn rebalance(&mut self) {
         let horizon = self
             .config
@@ -196,29 +222,13 @@ impl AccountTransferGroup {
                 .then(b.in_flight.cmp(&a.in_flight))
                 .then(a.id.cmp(&b.id))
         });
-        let capacity: u32 = self
-            .new
-            .iter()
-            .filter(|m| m.available && !m.terminal)
-            .map(|m| m.ceiling)
-            .sum();
-        let transferable: u32 = self
-            .old
-            .iter()
-            .filter(|m| m.available || m.terminal)
-            .map(|m| {
-                if m.terminal {
-                    m.baseline
-                } else {
-                    m.baseline
-                        .saturating_sub(self.config.minimum_old_concurrency.min(m.baseline))
-                }
-            })
-            .sum();
-        let total = self
-            .budget
-            .min(capacity)
-            .min(transferable.max(self.config.initial_new_concurrency));
+        let capacity = self.receiver_capacity();
+        let mut total = self.budget.min(capacity).min(self.transferable_capacity());
+        if self.old.iter().all(|old| old.limit == 0) {
+            let occupied = self.new.iter().map(|m| m.in_flight).sum::<u32>();
+            total = total.min(capacity.saturating_sub(occupied));
+        }
+        self.budget = total;
         let departed = self
             .old
             .iter()
@@ -237,33 +247,13 @@ impl AccountTransferGroup {
             old.limit = old.baseline.saturating_sub(taken).min(old.ceiling);
             remaining -= taken;
         }
+        // 转移预算只降低老号上限，增长流量与转出流量共用新号已有保护容量
         for new in &mut self.new {
-            new.limit = 0;
-        }
-        // 公平水位分配，低保护上限先饱和，其余名额继续分配，单次最多 64 个账号
-        remaining = total;
-        while remaining > 0 {
-            let available: Vec<_> = self
-                .new
-                .iter()
-                .enumerate()
-                .filter(|(_, m)| m.available && !m.terminal && m.limit < m.ceiling)
-                .map(|(i, _)| i)
-                .collect();
-            if available.is_empty() {
-                break;
-            }
-            let share = (remaining / available.len() as u32).max(1);
-            for i in available {
-                let n = remaining
-                    .min(share)
-                    .min(self.new[i].ceiling - self.new[i].limit);
-                self.new[i].limit += n;
-                remaining -= n;
-                if remaining == 0 {
-                    break;
-                }
-            }
+            new.limit = if new.available && !new.terminal {
+                new.ceiling
+            } else {
+                0
+            };
         }
     }
     pub fn advance(&mut self, now: u64, feedback: AccountHandoffFeedback) {
@@ -277,9 +267,7 @@ impl AccountTransferGroup {
         if feedback.failures != self.observed_failures
             || self.new.iter().any(|m| !m.available && !m.terminal)
         {
-            self.budget = self
-                .previous_budget
-                .max(self.config.initial_new_concurrency);
+            self.budget = self.previous_budget.min(self.budget);
             self.stable_since_ms = None;
             self.observed_successes = feedback.successes;
             self.observed_failures = feedback.failures;
@@ -310,11 +298,29 @@ impl AccountTransferGroup {
         }) && feedback.successes.saturating_sub(self.observed_successes)
             >= u64::from(self.config.minimum_successes)
         {
-            let allocated: u32 = self.new.iter().map(|m| m.limit).sum();
-            self.previous_budget = allocated;
-            self.budget = allocated
+            let allocated = self.budget;
+            let capacity = self.receiver_capacity();
+            let occupied: u32 = self.new.iter().map(|m| m.in_flight).sum();
+            let pending: u32 = self
+                .old
+                .iter()
+                .filter(|m| !m.terminal)
+                .map(|m| m.in_flight.saturating_sub(m.limit))
+                .sum();
+            let next = allocated
                 .saturating_add(self.config.decrement)
-                .min(self.old.iter().map(|m| m.baseline).sum());
+                .min(capacity)
+                .min(self.transferable_capacity());
+            // 增长流量和上一档尚未排空的老号请求都占承接余量，不能重复许诺空位
+            if next.saturating_sub(allocated)
+                > capacity.saturating_sub(occupied).saturating_sub(pending)
+            {
+                self.message = "承接容量已占用，保持老号当前上限".into();
+                self.rebalance();
+                return;
+            }
+            self.previous_budget = allocated;
+            self.budget = next;
             self.stable_since_ms = Some(now);
             self.observed_successes = feedback.successes;
         }

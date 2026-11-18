@@ -55,6 +55,7 @@ fn account_id(id: &str) -> ProviderAccountId {
 
 fn candidate(id: &str) -> AccountCandidate {
     AccountCandidate {
+        pool_priority: None,
         transfer: None,
         warmup_limit: None,
         handoff: None,

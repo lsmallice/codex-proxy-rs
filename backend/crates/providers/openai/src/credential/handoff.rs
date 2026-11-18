@@ -8,6 +8,15 @@ use gateway_core::{
 };
 use std::{collections::BTreeSet, time::SystemTime};
 
+pub(super) fn is_subscription(candidate: &AccountCandidate) -> bool {
+    candidate.account.authentication_kind() == super::CODEX_AUTHENTICATION_KIND_OAUTH
+        && candidate.account.plan_type().is_some_and(|plan| {
+            !plan.is_empty()
+                && !plan.eq_ignore_ascii_case("free")
+                && !plan.eq_ignore_ascii_case("unknown")
+        })
+}
+
 pub(super) async fn prepare(
     store: &dyn AccountHandoffStore,
     candidates: &[AccountCandidate],
@@ -31,12 +40,7 @@ pub(super) async fn prepare(
         return Ok(false);
     };
     let available = |c: &&AccountCandidate| {
-        c.account.authentication_kind() == super::CODEX_AUTHENTICATION_KIND_OAUTH
-            && c.account.plan_type().is_some_and(|p| {
-                !p.is_empty()
-                    && !p.eq_ignore_ascii_case("free")
-                    && !p.eq_ignore_ascii_case("unknown")
-            })
+        is_subscription(c)
             && c.account.credential_state() == CredentialState::Ready
             && c.account.quota().access() == QuotaAccessState::Allowed
             && c.account.status_projection(now, c.signals.cooldown).status == AccountStatus::Normal

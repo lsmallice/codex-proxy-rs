@@ -544,6 +544,7 @@ impl AccountQuotaSignals {
 /// 账号持久事实与可重建运行信号的请求级组合
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AccountCandidate {
+    pub pool_priority: Option<super::AccountPoolPriority>,
     pub transfer: Option<super::AccountTransferCapacity>,
     pub warmup_limit: Option<u32>,
     pub handoff: Option<super::AccountHandoffCapacity>,
@@ -602,6 +603,25 @@ pub struct AccountSelectionContext {
 }
 
 impl AccountSelectionContext {
+    fn pool_priority(&self, candidate: &AccountCandidate) -> Option<super::AccountPoolPriority> {
+        if self.reserved_concurrency > 0 {
+            return None;
+        }
+        self.active_transfer(candidate)
+            .map(|transfer| super::AccountPoolPriority {
+                consume: transfer.donor,
+                reference_concurrency: transfer.limit.max(1),
+            })
+            .or_else(|| {
+                candidate.pool_priority.map(|mut priority| {
+                    if self.active_handoff(candidate).is_some() {
+                        priority.consume = true;
+                    }
+                    priority
+                })
+            })
+    }
+
     pub fn active_transfer<'a>(
         &self,
         candidate: &'a AccountCandidate,
@@ -853,19 +873,42 @@ impl AccountSelector {
             }
         }
         eligible.retain(|candidate| candidate.account.weight() == highest_weight);
-        // 交接组优先消耗老号保留容量，再在指定承接池内按实时占用率分摊
+        // 消耗层保留额度重置优先，承接层均衡不依赖交接组是否仍在运行
         if let Some(candidate) = eligible
             .iter()
             .copied()
-            .filter(|c| context.active_transfer(c).is_some())
+            .filter(|c| context.pool_priority(c).is_some())
             .min_by(|a, b| {
-                let ta = context.active_transfer(a).unwrap();
-                let tb = context.active_transfer(b).unwrap();
-                tb.donor
-                    .cmp(&ta.donor)
+                let pa = context.pool_priority(a).unwrap();
+                let pb = context.pool_priority(b).unwrap();
+                pb.consume
+                    .cmp(&pa.consume)
                     .then_with(|| {
-                        capacity_utilization(a, context)
-                            .total_cmp(&capacity_utilization(b, context))
+                        if !pa.consume && !pb.consume {
+                            context
+                                .active_transfer(b)
+                                .is_some()
+                                .cmp(&context.active_transfer(a).is_some())
+                        } else {
+                            std::cmp::Ordering::Equal
+                        }
+                    })
+                    .then_with(|| {
+                        if pa.consume && pb.consume {
+                            quota_reset_priority(a, b, context)
+                        } else {
+                            std::cmp::Ordering::Equal
+                        }
+                    })
+                    .then_with(|| {
+                        let utilization = |c: &AccountCandidate, p: super::AccountPoolPriority| {
+                            let capacity = context
+                                .concurrency_limit(c)
+                                .limit()
+                                .map_or(p.reference_concurrency.max(1), |limit| limit.get());
+                            f64::from(c.signals.in_flight) / f64::from(capacity)
+                        };
+                        utilization(a, pa).total_cmp(&utilization(b, pb))
                     })
                     .then(a.signals.last_started_at.cmp(&b.signals.last_started_at))
                     .then(a.account.id().cmp(b.account.id()))
@@ -895,31 +938,17 @@ impl AccountSelector {
         let candidate = match context.policy.strategy() {
             RotationStrategy::QuotaResetPriority => {
                 eligible.sort_by(|left, right| {
-                    let windows = context.policy.quota_reset_window_weights();
-                    if windows.enabled() {
-                        windows
-                            .score(&right.signals, context.now)
-                            .total_cmp(&windows.score(&left.signals, context.now))
-                    } else {
-                        (
-                            left.signals.quota_reset_at.is_none(),
-                            left.signals.quota_reset_at,
-                        )
-                            .cmp(&(
-                                right.signals.quota_reset_at.is_none(),
-                                right.signals.quota_reset_at,
-                            ))
-                    }
-                    .then_with(|| {
-                        capacity_utilization(left, context)
-                            .total_cmp(&capacity_utilization(right, context))
-                    })
-                    .then_with(|| {
-                        left.signals
-                            .last_started_at
-                            .cmp(&right.signals.last_started_at)
-                    })
-                    .then_with(|| left.account.id().cmp(right.account.id()))
+                    quota_reset_priority(left, right, context)
+                        .then_with(|| {
+                            capacity_utilization(left, context)
+                                .total_cmp(&capacity_utilization(right, context))
+                        })
+                        .then_with(|| {
+                            left.signals
+                                .last_started_at
+                                .cmp(&right.signals.last_started_at)
+                        })
+                        .then_with(|| left.account.id().cmp(right.account.id()))
                 });
                 eligible.first().copied()?
             }
@@ -1066,6 +1095,28 @@ impl AccountSelector {
 
 // 首输出 10 秒时延迟得分减半；固定尺度不随其他候选账号变化
 const SMART_LATENCY_HALF_SCORE_MS: f64 = 10_000.0;
+
+fn quota_reset_priority(
+    left: &AccountCandidate,
+    right: &AccountCandidate,
+    context: &AccountSelectionContext,
+) -> std::cmp::Ordering {
+    let windows = context.policy.quota_reset_window_weights();
+    if windows.enabled() {
+        windows
+            .score(&right.signals, context.now)
+            .total_cmp(&windows.score(&left.signals, context.now))
+    } else {
+        (
+            left.signals.quota_reset_at.is_none(),
+            left.signals.quota_reset_at,
+        )
+            .cmp(&(
+                right.signals.quota_reset_at.is_none(),
+                right.signals.quota_reset_at,
+            ))
+    }
+}
 
 fn capacity_utilization(candidate: &AccountCandidate, context: &AccountSelectionContext) -> f64 {
     context
