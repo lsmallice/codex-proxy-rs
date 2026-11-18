@@ -12,6 +12,48 @@ fn policy() -> CodexRequestCompatibility {
 }
 
 #[tokio::test]
+async fn native_compatibility_guardian_applies_lite_without_store_or_json_rewrites() {
+    for api_key in [false, true] {
+        for websocket in [false, true] {
+            for (enabled, lite) in [(true, true), (false, true), (true, false)] {
+                let body = json!({
+                    "model": "gpt-5.4", "input": "Approve this command", "store": true,
+                    "client_metadata": {"x-openai-subagent": "guardian"},
+                    "reasoning": {"effort": "none"},
+                    "text": {"format": {"type": "json_object"}}
+                });
+                let sent = capture_downstream_request_with_policy(
+                    body.clone(),
+                    api_key,
+                    websocket,
+                    lite,
+                    CodexRequestCompatibility {
+                        lite_context: enabled,
+                        ..policy()
+                    },
+                )
+                .await;
+                assert_eq!(
+                    sent.get("parallel_tool_calls"),
+                    (enabled && lite).then_some(&Value::Bool(false)),
+                    "api_key={api_key}, websocket={websocket}, enabled={enabled}, lite={lite}"
+                );
+                assert_eq!(
+                    sent["reasoning"].get("context").and_then(Value::as_str),
+                    (enabled && lite).then_some("all_turns")
+                );
+                assert_eq!(sent["reasoning"]["effort"], "none");
+                assert_eq!(sent["store"], true);
+                assert_eq!(sent["text"], body["text"]);
+                assert_eq!(sent["input"].as_array().unwrap().len(), 1);
+                assert_eq!(sent["input"][0]["role"], "user");
+                assert_eq!(sent["client_metadata"]["x-openai-subagent"], "guardian");
+            }
+        }
+    }
+}
+
+#[tokio::test]
 async fn native_compatibility_preserves_oauth_output_limit_omission() {
     for alias in ["max_tokens", "max_completion_tokens", "max_output_tokens"] {
         for enabled in [false, true] {

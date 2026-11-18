@@ -135,9 +135,92 @@ pub struct AccountTransferCapacity {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct AccountPoolPriority {
     pub consume: bool,
+    pub retained_concurrency: u32,
     pub reference_concurrency: u32,
 }
+
+/// 控制面本轮确认的角色资格，不保存第二份账号年龄或保护状态
+#[derive(Debug, Clone, Copy)]
+pub struct TransferRoleObservation {
+    pub created_at_ms: u64,
+    pub protected: bool,
+}
+
 impl AccountTransferGroup {
+    pub fn promote_receivers(
+        &mut self,
+        observations: &BTreeMap<String, TransferRoleObservation>,
+        now: u64,
+        feedback: AccountHandoffFeedback,
+    ) -> bool {
+        let Some(config) = self.config.transfer_group.as_ref() else {
+            return false;
+        };
+        if !self.automatic || self.finished || feedback.failures != self.observed_failures {
+            return false;
+        }
+        let mature = |m: &TransferMember| {
+            observations.get(&m.id).is_some_and(|o| {
+                now.checked_sub(o.created_at_ms).is_some_and(|age| {
+                    !o.protected
+                        && age / 1000 >= u64::from(config.minimum_mature_seconds)
+                        && (config.old_eligible(age / 1000, m.remaining_basis_points, false)
+                            || m.remaining_seconds
+                                .is_some_and(|s| s <= u64::from(config.preparation_seconds)))
+                })
+            })
+        };
+        let promoted: Vec<_> = self
+            .new
+            .iter()
+            .filter(|m| {
+                m.available
+                    && !m.terminal
+                    && mature(m)
+                    && self.new.iter().any(|next| {
+                        next.available
+                            && !next.terminal
+                            && !mature(next)
+                            && next
+                                .remaining_basis_points
+                                .is_some_and(|r| r > u64::from(config.remaining_percent) * 100)
+                            && observations
+                                .get(&next.id)
+                                .zip(observations.get(&m.id))
+                                .is_some_and(|(new, old)| new.created_at_ms > old.created_at_ms)
+                    })
+            })
+            .map(|m| m.id.clone())
+            .collect();
+        if promoted.is_empty() {
+            return false;
+        }
+        // 已完成减载作为新阶段起点，不能因角色重排恢复老号负载或立即卸载新老号
+        for old in &mut self.old {
+            old.baseline = if old.terminal { 0 } else { old.limit };
+        }
+        let mut receivers = Vec::new();
+        for mut member in std::mem::take(&mut self.new) {
+            if promoted.contains(&member.id) {
+                member.baseline = member
+                    .in_flight
+                    .max(self.config.minimum_old_concurrency)
+                    .min(member.ceiling);
+                member.limit = member.baseline;
+                self.old.push(member);
+            } else {
+                receivers.push(member);
+            }
+        }
+        self.new = receivers;
+        self.budget = 0;
+        self.previous_budget = 0;
+        self.stable_since_ms = None;
+        self.observed_successes = feedback.successes;
+        self.observed_failures = feedback.failures;
+        self.rebalance();
+        true
+    }
     pub fn participant_ids(&self) -> impl Iterator<Item = &str> {
         self.old.iter().chain(&self.new).map(|m| m.id.as_str())
     }

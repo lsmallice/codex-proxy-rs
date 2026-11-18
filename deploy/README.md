@@ -955,6 +955,7 @@ Key ID 去重且最多 1000 项，单项 1–128 个字母、数字、下划线�
 输出预算与工具结构在鉴权后、路由前应用，仅匹配 `/v1/responses`、`/responses` 的
 gpt-/codex- 请求，包括 API Key 上游；开启预算规则前应确认这些路由确实需要最低 16 Token。
 Lite、JSON 与 OAuth 存储规则由 OpenAI Provider 在原生发送链处理，支持 HTTP 和 WS。
+Guardian 自动审批的生成请求只执行已开启的 Lite 补正，不注入 JSON 指令或改写存储意图。
 OAuth 由官方兼容规则将旧 token 上限转换为 max_output_tokens 后，也会应用已启用的最低预算。
 工具名称仍不满足字母、数字、下划线和连字符规则时返回 `400 invalid_tool_name`；
 嵌套结构含未知字段或与顶层定义冲突时返回 `400 invalid_tool_structure`，不静默选择某一份定义。

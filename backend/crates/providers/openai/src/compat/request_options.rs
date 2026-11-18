@@ -20,10 +20,14 @@ pub(crate) fn apply_selected_request_compatibility(
     oauth: bool,
 ) -> Corrections {
     let mut result = Corrections::default();
-    if !request.generate() || request.is_guardian() {
+    if !request.generate() {
         return result;
     }
     request.lite_context_compat = policy.lite_context;
+    // Guardian 也受 Lite 参数合同约束，但不能注入业务指令或改写存储意图
+    if request.is_guardian() {
+        return result;
+    }
     let body = request.body_mut();
     if policy.store_false && oauth && body.get("store") != Some(&Value::Bool(false)) {
         body.insert("store".into(), Value::Bool(false));

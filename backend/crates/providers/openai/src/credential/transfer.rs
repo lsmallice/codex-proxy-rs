@@ -49,6 +49,7 @@ pub(super) fn pool_priority(
         consume: age_seconds(candidate, now).is_some_and(|age| {
             config.old_eligible(age, fresh_remaining(candidate, now), protected)
         }),
+        retained_concurrency: policy.config.minimum_old_concurrency,
         reference_concurrency: protection.release_concurrency,
     })
 }

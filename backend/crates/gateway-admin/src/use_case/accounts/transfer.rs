@@ -333,6 +333,20 @@ impl DefaultAccountsService {
                     (t, e) => t.or(e),
                 };
             }
+            let roles = observed
+                .iter()
+                .filter_map(|a| {
+                    Some((
+                        a.account.id.clone(),
+                        gateway_core::account::TransferRoleObservation {
+                            created_at_ms: u64::try_from(a.account.created_at.timestamp_millis())
+                                .ok()?,
+                            protected: warm.iter().any(|w| w.state.account_id == a.account.id),
+                        },
+                    ))
+                })
+                .collect();
+            item.state.promote_receivers(&roles, now, item.feedback);
             item.state.advance(now, item.feedback);
             store
                 .save_transfer_group(item.state, rev, item.feedback.failures)

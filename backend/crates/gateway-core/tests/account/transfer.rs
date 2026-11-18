@@ -16,6 +16,133 @@ fn handoff_transfer_departed_donor_does_not_double_reduce_remaining_old() {
 use gateway_core::account::*;
 
 #[test]
+fn handoff_transfer_promotes_mature_receivers_without_restarting_drained_capacity() {
+    let mut g = group();
+    g.automatic = true;
+    g.config.minimum_old_concurrency = 66;
+    g.new[0].ceiling = 150;
+    g.new[0].remaining_basis_points = Some(1000);
+    g.new[0].in_flight = 90;
+    g.new.push(member("acct_new2", 0, 50, 9900));
+    g.rebalance();
+    let before: std::collections::BTreeMap<_, _> =
+        g.old.iter().map(|m| (m.id.clone(), m.limit)).collect();
+    let now = 10_000_000;
+    let roles = std::collections::BTreeMap::from([
+        (
+            "acct_new1".into(),
+            TransferRoleObservation {
+                created_at_ms: now - 1_800_000,
+                protected: false,
+            },
+        ),
+        (
+            "acct_new2".into(),
+            TransferRoleObservation {
+                created_at_ms: now - 60_000,
+                protected: true,
+            },
+        ),
+    ]);
+    let feedback = AccountHandoffFeedback {
+        successes: 500,
+        ..Default::default()
+    };
+    assert!(g.promote_receivers(&roles, now, feedback));
+    assert_eq!(g.new.len(), 1);
+    assert_eq!(g.new[0].id, "acct_new2");
+    assert_eq!(g.new[0].limit, 50);
+    assert_eq!(
+        g.old.iter().find(|m| m.id == "acct_new1").unwrap().limit,
+        90
+    );
+    for (id, limit) in &before {
+        assert_eq!(g.old.iter().find(|m| &m.id == id).unwrap().limit, *limit);
+    }
+    assert_eq!((g.budget, g.previous_budget), (0, 0));
+    assert!(g.stable_since_ms.is_none());
+    assert!(!g.promote_receivers(&roles, now, feedback));
+    g.old.iter_mut().for_each(|m| m.in_flight = m.limit);
+    g.new[0].in_flight = 10;
+    for i in 1..=8 {
+        let at = now + i * 5000;
+        g.advance(
+            at,
+            AccountHandoffFeedback {
+                successes: 500 + i * 4,
+                last_success_at_ms: at,
+                ..Default::default()
+            },
+        );
+    }
+    assert!(g.old.iter().find(|m| m.id == "acct_new1").unwrap().limit >= 66);
+    assert!(g.old.iter().find(|m| m.id == "acct_new1").unwrap().limit < 90);
+}
+
+#[test]
+fn handoff_transfer_role_changes_require_healthy_newer_replacement_and_completed_protection() {
+    let now = 10_000_000;
+    for case in [
+        "manual",
+        "protected",
+        "immature",
+        "plenty",
+        "no_replacement",
+        "same_age",
+        "unknown_quota",
+        "failed_receiver",
+        "new_failure",
+    ] {
+        let mut g = group();
+        g.automatic = case != "manual";
+        g.new[0].remaining_basis_points = Some(if case == "plenty" { 9000 } else { 1000 });
+        if case != "no_replacement" {
+            g.new.push(member("acct_new2", 0, 50, 9900));
+        }
+        if case == "unknown_quota" {
+            g.new[1].remaining_basis_points = None;
+        }
+        if case == "failed_receiver" {
+            g.new[1].available = false;
+        }
+        let created = now - if case == "immature" { 1000 } else { 1_800_000 };
+        let roles = std::collections::BTreeMap::from([
+            (
+                "acct_new1".into(),
+                TransferRoleObservation {
+                    created_at_ms: created,
+                    protected: case == "protected",
+                },
+            ),
+            (
+                "acct_new2".into(),
+                TransferRoleObservation {
+                    created_at_ms: if case == "same_age" {
+                        created
+                    } else {
+                        now - 500
+                    },
+                    protected: true,
+                },
+            ),
+        ]);
+        let before = g.clone();
+        assert!(
+            !g.promote_receivers(
+                &roles,
+                now,
+                AccountHandoffFeedback {
+                    failures: u64::from(case == "new_failure"),
+                    ..Default::default()
+                }
+            ),
+            "{case}"
+        );
+        assert_eq!(g, before, "{case}");
+    }
+}
+
+#[test]
 fn handoff_transfer_prediction_expires_and_recomputes_from_observation_time() {
     let mut points = vec![
         TransferQuotaSample {
@@ -170,10 +297,71 @@ fn pool_candidate(id: &str, used: u32, consume: bool, limit: Option<u32>) -> Acc
     let mut c = candidate(id, used, None);
     c.pool_priority = Some(AccountPoolPriority {
         consume,
+        retained_concurrency: 66,
         reference_concurrency: 150,
     });
     c.warmup_limit = limit;
     c
+}
+
+#[test]
+fn handoff_pool_unlimited_consumption_does_not_starve_other_accounts() {
+    let mut ctx = context(RotationStrategy::QuotaResetPriority);
+    ctx.policy = AccountSelectionPolicy::new(
+        RotationStrategy::QuotaResetPriority,
+        AccountConcurrency::new(0),
+    );
+    let mut candidates = vec![
+        pool_candidate("acct_old", 229, true, None),
+        pool_candidate("acct_next", 1, false, None),
+    ];
+    for _ in 0..100 {
+        let chosen = AccountSelector
+            .select(&candidates, &ctx)
+            .unwrap()
+            .candidate()
+            .account
+            .id()
+            .clone();
+        assert_eq!(chosen.as_str(), "acct_next");
+        candidates[1].signals.in_flight += 1;
+    }
+    candidates[0].signals.in_flight = 65;
+    assert_eq!(
+        AccountSelector
+            .select(&candidates, &ctx)
+            .unwrap()
+            .candidate()
+            .account
+            .id()
+            .as_str(),
+        "acct_old"
+    );
+    // 已有会话保留绑定；原账号失去资格后才按实际剩余容量选择
+    ctx.preferred_account = Some(candidates[0].account.id().clone());
+    candidates[0].signals.in_flight = 229;
+    assert_eq!(
+        AccountSelector
+            .select(&candidates, &ctx)
+            .unwrap()
+            .candidate()
+            .account
+            .id()
+            .as_str(),
+        "acct_old"
+    );
+    ctx.excluded_accounts
+        .insert(candidates[0].account.id().clone());
+    assert_eq!(
+        AccountSelector
+            .select(&candidates, &ctx)
+            .unwrap()
+            .candidate()
+            .account
+            .id()
+            .as_str(),
+        "acct_next"
+    );
 }
 
 #[test]

@@ -610,12 +610,14 @@ impl AccountSelectionContext {
         self.active_transfer(candidate)
             .map(|transfer| super::AccountPoolPriority {
                 consume: transfer.donor,
+                retained_concurrency: transfer.limit.max(1),
                 reference_concurrency: transfer.limit.max(1),
             })
             .or_else(|| {
                 candidate.pool_priority.map(|mut priority| {
-                    if self.active_handoff(candidate).is_some() {
+                    if let Some(handoff) = self.active_handoff(candidate) {
                         priority.consume = true;
+                        priority.retained_concurrency = handoff.old_limit;
                     }
                     priority
                 })
@@ -881,10 +883,13 @@ impl AccountSelector {
             .min_by(|a, b| {
                 let pa = context.pool_priority(a).unwrap();
                 let pb = context.pool_priority(b).unwrap();
-                pb.consume
-                    .cmp(&pa.consume)
+                // 无限账号的消耗优先只填保留目标，不能持续吞掉全部新增会话
+                let consume_a = pa.consume && a.signals.in_flight < pa.retained_concurrency;
+                let consume_b = pb.consume && b.signals.in_flight < pb.retained_concurrency;
+                consume_b
+                    .cmp(&consume_a)
                     .then_with(|| {
-                        if !pa.consume && !pb.consume {
+                        if !consume_a && !consume_b {
                             context
                                 .active_transfer(b)
                                 .is_some()
@@ -894,7 +899,7 @@ impl AccountSelector {
                         }
                     })
                     .then_with(|| {
-                        if pa.consume && pb.consume {
+                        if consume_a && consume_b {
                             quota_reset_priority(a, b, context)
                         } else {
                             std::cmp::Ordering::Equal

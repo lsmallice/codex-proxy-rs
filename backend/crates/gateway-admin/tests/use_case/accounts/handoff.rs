@@ -303,7 +303,7 @@ async fn transfer_reconcile_refreshes_priority_and_discards_stale_quota_without_
         )])),
     });
     let services = super::super::AdminHarness::new()
-        .accounts(accounts)
+        .accounts(accounts.clone())
         .account_runtime(Arc::new(CapacityRuntime {
             counts: Some(BTreeMap::new()),
             fail: false,
@@ -321,6 +321,17 @@ async fn transfer_reconcile_refreshes_priority_and_discards_stale_quota_without_
     assert!(updated.old[0].remaining_seconds.is_some_and(|s| s <= 8));
     assert_eq!(updated.old[0].limit, 70);
     assert_eq!(updated.old[1].limit, 120);
+    let projected = services.accounts().list(query()).await.unwrap();
+    let receiver = projected
+        .items
+        .iter()
+        .find(|a| a.account.id == "acct_new")
+        .unwrap();
+    assert!(receiver.handoff_limit.is_some());
+    assert!(
+        receiver.warmup_limit.is_none(),
+        "承接容量不能伪装为新号保护"
+    );
 
     // 额度恢复时按新读数排序，不继续使用之前的耗尽倒计时
     provider
@@ -361,6 +372,45 @@ async fn transfer_reconcile_refreshes_priority_and_discards_stale_quota_without_
             .iter()
             .all(|q| !q.refresh)
     );
+    // 同组追加更新账号后，低额度承接账号在五秒维护中转入消耗层
+    {
+        let mut data = accounts.accounts.lock().unwrap();
+        let mut newest = data.iter().find(|a| a.id == "acct_new").unwrap().clone();
+        newest.id = "acct_newest".into();
+        newest.created_at = now - TimeDelta::seconds(30);
+        data.push(newest);
+    }
+    {
+        let mut quotas = provider.account_quotas.lock().unwrap();
+        for q in quotas.values_mut() {
+            q.observed_at = Some(now);
+        }
+        let mut newest = quotas["acct_new"].clone();
+        newest.windows[0].used_percent = Some(1.0);
+        quotas.insert("acct_newest".into(), newest);
+        quotas.get_mut("acct_new").unwrap().windows[0].used_percent = Some(90.0);
+    }
+    {
+        let mut groups = store.transfers.lock().unwrap();
+        let g = &mut groups[0].state;
+        g.automatic = true;
+        let mut newest = member("acct_newest", 9900);
+        newest.ceiling = 50;
+        g.new.push(newest);
+        g.rebalance();
+    }
+    services.accounts().reconcile_handoffs().await.unwrap();
+    let promoted = store.transfers.lock().unwrap()[0].state.clone();
+    assert!(promoted.old.iter().any(|m| m.id == "acct_new"));
+    assert_eq!(
+        promoted
+            .new
+            .iter()
+            .map(|m| m.id.as_str())
+            .collect::<Vec<_>>(),
+        ["acct_newest"]
+    );
+    assert_eq!(promoted.budget, 0);
 }
 
 #[tokio::test]

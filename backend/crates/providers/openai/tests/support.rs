@@ -979,6 +979,7 @@ fn rebuild_account(current: &ProviderAccount, rebuild: AccountRebuild) -> Provid
 
 #[derive(Default)]
 pub(crate) struct TestLeaseCoordinator {
+    pub(crate) transfers: Mutex<Vec<gateway_core::account::AccountTransferSnapshot>>,
     pub(crate) handoff_policy: Mutex<gateway_core::account::AccountHandoffPolicy>,
     pub(crate) warmups: Mutex<BTreeMap<ProviderAccountId, Option<u32>>>,
     pub(crate) requests: Mutex<Vec<ProviderSchedulingLeaseRequest>>,
@@ -1038,7 +1039,8 @@ impl ProviderLeasePort for TestLeaseCoordinator {
                     self.handoff_policy.lock().unwrap().clone(),
                     Default::default(),
                 )
-                .with_warmups(self.warmups.lock().unwrap().clone()))
+                .with_warmups(self.warmups.lock().unwrap().clone())
+                .with_transfers(self.transfers.lock().unwrap().clone()))
         })
     }
 

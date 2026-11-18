@@ -1294,18 +1294,6 @@ impl CodexCredentialSelector {
                         SystemTime::now(),
                     )
                 });
-            // 消耗与承接层的软亲和可重选完整请求，固定续接和跟随线程保留原身份
-            if pinned_account.is_none()
-                && !follow_only
-                && affinity_mode == AccountAffinity::Preferred
-                && affinity.preferred_account().is_some_and(|id| {
-                    candidates.iter().any(|c| {
-                        c.account.id() == id && (c.transfer.is_some() || c.pool_priority.is_some())
-                    })
-                })
-            {
-                affinity.escape(AffinityEscapeReason::SchedulingPolicy);
-            }
             let cyber_policy_scope = self
                 .prepare_cyber_policy_scope(cyber_policy_session_key)
                 .await;
@@ -1473,13 +1461,11 @@ impl CodexCredentialSelector {
                     }
                     let mut follow_context = context.clone();
                     follow_context.now = SystemTime::now();
-                    follow_context.excluded_accounts.extend(
-                        candidates
-                            .iter()
-                            .filter(|candidate| preferred != Some(candidate.account.id()))
-                            .map(|candidate| candidate.account.id().clone()),
-                    );
-                    let preferred_selection = AccountSelector.select(&candidates, &follow_context);
+                    follow_context.preferred_account = preferred.cloned();
+                    // 保留承接池资格，否则排除对端会错误解除老号的交接容量上限
+                    let preferred_selection = AccountSelector
+                        .select(&candidates, &follow_context)
+                        .filter(|selected| Some(selected.candidate().account.id()) == preferred);
                     if follow_only {
                         preferred_selection
                     } else {
@@ -1606,6 +1592,7 @@ impl CodexCredentialSelector {
                 if pinned_account.is_none()
                     && !follow_only
                     && !selection.is_policy_choice()
+                    && selection.preferred() != PreferredAccountSelection::Hit
                     && let Some(limiter) = &self.dispatch_limiter
                     && !limiter.ready(selected.account.id()).await?
                 {
@@ -1701,17 +1688,29 @@ impl CodexCredentialSelector {
                         busy_accounts.insert(account.id().clone());
                     }
                     ProviderLeaseAcquisition::Acquired(guard) => {
+                        // 容量交接后保留新绑定，避免原号腾出空位就把同一会话拉回
+                        // 仅短时发送限流时仍在原账号等待，不靠换号绕过保护
+                        let migrate_for_capacity = !selection.is_policy_choice()
+                            && affinity.escape_reason == Some(AffinityEscapeReason::LeaseSaturated)
+                            && candidates.iter().any(|candidate| {
+                                affinity.bound_account() == Some(candidate.account.id())
+                                    && (candidate.pool_priority.is_some()
+                                        || candidate.warmup_limit.is_some()
+                                        || context.active_transfer(candidate).is_some()
+                                        || context.active_handoff(candidate).is_some())
+                            });
                         let mut binding_account = account.id();
                         if affinity_mode == AccountAffinity::Preferred
                             && let Some(primary) = binding.as_ref()
                             && (primary.account_id() == account.id()
                                 || pinned_account.is_some()
-                                || !self
-                                    .preferred_primary_needs_migration(
-                                        primary,
-                                        queue_policy.timeout,
-                                    )
-                                    .await?)
+                                || (!migrate_for_capacity
+                                    && !self
+                                        .preferred_primary_needs_migration(
+                                            primary,
+                                            queue_policy.timeout,
+                                        )
+                                        .await?))
                         {
                             binding_account = primary.account_id();
                         }

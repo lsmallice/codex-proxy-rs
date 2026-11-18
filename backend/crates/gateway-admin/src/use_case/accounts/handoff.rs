@@ -78,12 +78,9 @@ impl DefaultAccountsService {
                 for (id, cap) in group.state.capacities() {
                     if let Some(item) = items.iter_mut().find(|i| i.account.id == id) {
                         let limit = u64::from(cap.limit);
-                        if cap.donor {
-                            item.handoff_limit =
-                                Some(item.capacity.total_slots.map_or(limit, |n| n.min(limit)));
-                        } else {
-                            item.warmup_limit = Some(limit);
-                        }
+                        // 承接上限属于交接，只有真实保护记录才显示新号保护
+                        item.handoff_limit =
+                            Some(item.capacity.total_slots.map_or(limit, |n| n.min(limit)));
                     }
                 }
             }

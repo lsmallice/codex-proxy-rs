@@ -187,6 +187,91 @@ async fn dispatch_gate_limits_each_http_and_websocket_send_without_touching_acco
     }
 }
 
+#[tokio::test]
+async fn dispatch_bound_session_waits_for_its_bucket_without_moving_to_another_account() {
+    use gateway_core::{
+        account::{AccountAffinity, AccountTrafficPolicy, AccountTrafficRuntime},
+        provider_ports::AccountDispatchLimiter,
+    };
+    let accounts = Arc::new(MemoryAccountStore::default());
+    for id in ["acct_subagent_a", "acct_subagent_b"] {
+        create_account(&accounts, id).await;
+    }
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/codex/responses"))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_raw(CAPTURE_COMPLETED_SSE, "text/event-stream"),
+        )
+        .expect(2)
+        .mount(&server)
+        .await;
+    let dispatch = Arc::new(DispatchProbe::default());
+    let runtime = Arc::new(AccountTrafficRuntime::default());
+    runtime.publish(AccountTrafficPolicy {
+        enabled: true,
+        ..Default::default()
+    });
+    let provider = Arc::new(
+        Arc::try_unwrap(provider_with_base_url(&accounts, server.uri()))
+            .ok()
+            .unwrap()
+            .with_dispatch_limiter(Arc::new(AccountDispatchLimiter::new(
+                dispatch.clone(),
+                runtime,
+            ))),
+    );
+    let context = || {
+        AttemptContext::new(
+            RequestAttemptContext::new(
+                ModelRequestId::new("req_sticky_traffic").unwrap(),
+                ClientApiKeyId::new("key_openai_contract").unwrap(),
+            ),
+            NonZeroU32::new(1).unwrap(),
+            SystemTime::now() + Duration::from_secs(5),
+            account_policy().with_openai_account_affinity(AccountAffinity::Preferred),
+            AccountAttemptContext::new(BTreeSet::new(), None, None)
+                .with_account_scope(contract_account_scope()),
+            None,
+            CancellationToken::new(),
+        )
+    };
+    let (_, error) =
+        super::response_recovery::collect(provider.clone(), operation("capacity-root"), context())
+            .await;
+    assert!(error.is_none(), "{error:?}");
+    assert_eq!(*dispatch.starts.lock().unwrap(), vec!["acct_subagent_a"]);
+    dispatch
+        .unavailable
+        .lock()
+        .unwrap()
+        .insert("acct_subagent_a".into());
+    dispatch.blocked.store(true, Ordering::SeqCst);
+    let mut waiting = Box::pin(super::response_recovery::collect(
+        provider,
+        operation("capacity-root"),
+        context(),
+    ));
+    assert!(
+        timeout(Duration::from_millis(100), &mut waiting)
+            .await
+            .is_err()
+    );
+    assert_eq!(
+        server.received_requests().await.unwrap().len(),
+        1,
+        "桶内无令牌时不能发送"
+    );
+    dispatch.blocked.store(false, Ordering::SeqCst);
+    let (_, error) = timeout(Duration::from_secs(5), waiting).await.unwrap();
+    assert!(error.is_none(), "{error:?}");
+    assert_eq!(
+        *dispatch.starts.lock().unwrap(),
+        vec!["acct_subagent_a", "acct_subagent_a"]
+    );
+    server.verify().await;
+}
+
 fn queued_context(request_id: &str) -> AttemptContext {
     AttemptContext::new(
         RequestAttemptContext::new(

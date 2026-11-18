@@ -243,6 +243,110 @@ async fn handoff_group_redis_join_cas_and_shared_cap_survive_restarts() {
 }
 
 #[tokio::test]
+async fn handoff_receiver_promotion_is_atomic_and_keeps_warmup_completion_receipts() {
+    let Some((store, _, _)) = store_connection().await else {
+        return;
+    };
+    let mut g = transfer_group();
+    g.automatic = true;
+    g.policy_revision = 1;
+    let mut next = g.new[0].clone();
+    next.id = "acct_n2".into();
+    next.name = next.id.clone();
+    g.new.push(next);
+    assert!(
+        store
+            .save_policy(
+                AccountHandoffPolicy {
+                    enabled: true,
+                    revision: 1,
+                    config: g.config.clone(),
+                    ..Default::default()
+                },
+                0
+            )
+            .await
+            .unwrap()
+    );
+    g.rebalance();
+    assert!(store.save_transfer_group(g, 0, 0).await.unwrap());
+    let mut finished = store
+        .warmups()
+        .await
+        .unwrap()
+        .into_iter()
+        .find(|w| w.state.account_id == "acct_n1")
+        .unwrap()
+        .state;
+    finished.finished = true;
+    assert!(store.update_warmup(finished, 0).await.unwrap());
+    let warm_before = store.warmups().await.unwrap();
+    let mut snapshot = store.transfer_groups().await.unwrap().remove(0);
+    snapshot.state.new[0].remaining_basis_points = Some(1000);
+    let now = 10_000_000;
+    let roles = std::collections::BTreeMap::from([
+        (
+            "acct_n1".into(),
+            gateway_core::account::TransferRoleObservation {
+                created_at_ms: now - 1_800_000,
+                protected: false,
+            },
+        ),
+        (
+            "acct_n2".into(),
+            gateway_core::account::TransferRoleObservation {
+                created_at_ms: now - 1000,
+                protected: true,
+            },
+        ),
+    ]);
+    assert!(
+        snapshot
+            .state
+            .promote_receivers(&roles, now, snapshot.feedback)
+    );
+    assert!(
+        !store
+            .save_transfer_group(snapshot.state.clone(), snapshot.state.revision, 1)
+            .await
+            .unwrap()
+    );
+    assert!(
+        store
+            .save_transfer_group(snapshot.state.clone(), snapshot.state.revision, 0)
+            .await
+            .unwrap()
+    );
+    assert!(
+        !store
+            .save_transfer_group(snapshot.state.clone(), snapshot.state.revision, 0)
+            .await
+            .unwrap()
+    );
+    let saved = store.transfer_groups().await.unwrap().remove(0);
+    assert_eq!(saved.state.new.len(), 1);
+    assert_eq!(saved.state.new[0].id, "acct_n2");
+    assert!(saved.state.old.iter().any(|m| m.id == "acct_n1"));
+    assert_eq!(store.warmups().await.unwrap(), warm_before);
+    assert_eq!(
+        store
+            .warmup_limits(&[ProviderAccountId::new("acct_n1").unwrap()])
+            .await
+            .unwrap()
+            .values()
+            .next(),
+        Some(&None)
+    );
+    assert!(
+        store
+            .handled(&[ProviderAccountId::new("acct_n1").unwrap()])
+            .await
+            .unwrap()
+            .contains(&ProviderAccountId::new("acct_n1").unwrap())
+    );
+}
+
+#[tokio::test]
 async fn handoff_group_redis_accepts_growth_without_multiplying_per_account_protection() {
     use gateway_store::redis::{
         CredentialBoundedLeaseAcquisition, CredentialBoundedLeaseRequest, CredentialLeaseScope,
