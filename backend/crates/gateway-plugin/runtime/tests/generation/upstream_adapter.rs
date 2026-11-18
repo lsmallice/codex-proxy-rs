@@ -567,7 +567,13 @@ async fn adapter_sse_outlives_rpc_budget_and_cancellation_closes_its_resources()
             for _ in 0..6 {
                 tokio::select! {
                     result = socket.read(&mut buffer) => {
-                        assert_eq!(result.unwrap(), 0);
+                        // 主动取消时内核可返回 RST，正常流仍必须读到 EOF
+                        match result {
+                            Err(error) if cancel => {
+                                assert_eq!(error.kind(), std::io::ErrorKind::ConnectionReset);
+                            }
+                            result => assert_eq!(result.unwrap(), 0),
+                        }
                         return false;
                     }
                     () = tokio::time::sleep(Duration::from_millis(200)) => {}

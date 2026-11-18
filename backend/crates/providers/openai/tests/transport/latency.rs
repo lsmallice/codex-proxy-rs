@@ -596,7 +596,8 @@ async fn account_eviction_should_cancel_a_background_websocket_opening() {
     pool.shutdown().await;
 }
 
-#[tokio::test(start_paused = true)]
+// 核对真实 TCP 关闭时使用真实时钟，避免暂停时钟在内核 I/O 就绪前推进到超时
+#[tokio::test]
 async fn pool_shutdown_should_cancel_and_join_a_background_websocket_opening() {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
