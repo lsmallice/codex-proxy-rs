@@ -611,7 +611,11 @@ impl AccountSelectionContext {
             .map(|transfer| super::AccountPoolPriority {
                 consume: transfer.donor,
                 retained_concurrency: transfer.limit.max(1),
-                reference_concurrency: transfer.limit.max(1),
+                reference_concurrency: if !transfer.donor && transfer.limit == u32::MAX {
+                    transfer.reference_concurrency.max(1)
+                } else {
+                    transfer.limit.max(1)
+                },
             })
             .or_else(|| {
                 candidate.pool_priority.map(|mut priority| {
@@ -668,6 +672,9 @@ impl AccountSelectionContext {
                     }))
                 });
             let limit = self.active_transfer(candidate).map_or(limit, |t| {
+                if !t.donor && t.limit == u32::MAX {
+                    return limit;
+                }
                 AccountConcurrency::new(
                     limit
                         .limit()

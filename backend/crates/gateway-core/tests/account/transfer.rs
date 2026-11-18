@@ -64,6 +64,7 @@ fn handoff_transfer_promotes_mature_receivers_without_restarting_drained_capacit
     assert!(!g.promote_receivers(&roles, now, feedback));
     g.old.iter_mut().for_each(|m| m.in_flight = m.limit);
     g.new[0].in_flight = 10;
+    g.new[0].ceiling = 80;
     for i in 1..=8 {
         let at = now + i * 5000;
         g.advance(
@@ -251,8 +252,14 @@ pub fn group() -> AccountTransferGroup {
         created_at_ms: 1000,
         checked_at_ms: 1000,
         old: vec![
-            member("acct_old1", 120, 200, 1700),
-            member("acct_old2", 100, 200, 3700),
+            TransferMember {
+                limit: 120,
+                ..member("acct_old1", 120, 200, 1700)
+            },
+            TransferMember {
+                limit: 100,
+                ..member("acct_old2", 100, 200, 3700)
+            },
         ],
         new: vec![member("acct_new1", 0, 50, 9500)],
         budget: 50,
@@ -262,6 +269,193 @@ pub fn group() -> AccountTransferGroup {
         observed_failures: 0,
         finished: false,
         message: String::new(),
+    }
+}
+
+#[test]
+fn handoff_transfer_initial_drain_keeps_one_shared_step_for_growth() {
+    let mut g = group();
+    g.old = vec![member("acct_old", 150, 200, 2000)];
+    g.rebalance();
+    assert_eq!(g.old[0].limit, 125);
+    assert_eq!(g.new[0].limit, 50);
+    assert_eq!(g.budget, 25);
+    assert_eq!(g.old[0].limit + g.new[0].limit - 150, 25);
+}
+
+#[test]
+fn handoff_transfer_growth_restores_only_bounded_donor_capacity_without_releasing_warmup() {
+    let mut g = group();
+    g.config.minimum_old_concurrency = 66;
+    g.old = vec![member("acct_old", 150, 200, 2000)];
+    g.old[0].limit = 66;
+    g.old[0].in_flight = 66;
+    g.new[0].ceiling = 100;
+    g.new[0].in_flight = 100;
+    g.budget = 84;
+    g.previous_budget = 54;
+    g.rebalance();
+    g.advance(
+        6000,
+        AccountHandoffFeedback {
+            successes: 10,
+            last_success_at_ms: 6000,
+            ..Default::default()
+        },
+    );
+    assert_eq!(g.old[0].limit, 96);
+    assert_eq!(g.new[0].limit, 100);
+    assert!(g.stable_since_ms.is_none());
+    for now in [11000, 16000, 21000, 26000] {
+        g.old[0].in_flight = g.old[0].limit;
+        g.advance(
+            now,
+            AccountHandoffFeedback {
+                successes: now,
+                last_success_at_ms: now,
+                ..Default::default()
+            },
+        );
+        assert!(g.old[0].limit <= 150);
+        assert_eq!(g.new[0].limit, 100);
+    }
+    assert_eq!(g.old[0].limit, 150);
+}
+
+#[test]
+fn handoff_transfer_growth_and_drain_share_reserve_across_many_members() {
+    let mut g = group();
+    g.budget = 80;
+    g.new[0].ceiling = 80;
+    g.new.push(member("acct_new2", 0, 50, 9000));
+    g.old.iter_mut().for_each(|m| m.limit = 1);
+    g.rebalance();
+    g.old.iter_mut().for_each(|m| m.in_flight = m.limit);
+    g.new.iter_mut().for_each(|m| m.in_flight = m.ceiling);
+    let before: u32 = g.old.iter().map(|m| m.limit).sum();
+    g.advance(
+        6000,
+        AccountHandoffFeedback {
+            successes: 10,
+            last_success_at_ms: 6000,
+            ..Default::default()
+        },
+    );
+    assert_eq!(g.old.iter().map(|m| m.limit).sum::<u32>() - before, 30);
+    assert_eq!(g.new.iter().map(|m| m.limit).collect::<Vec<_>>(), [80, 50]);
+}
+
+#[test]
+fn handoff_transfer_resumes_drain_to_retained_floor_when_receivers_gain_capacity() {
+    let mut g = group();
+    g.config.minimum_old_concurrency = 66;
+    g.old = vec![member("acct_old", 150, 200, 1500)];
+    g.new[0].ceiling = 50;
+    g.rebalance();
+    assert_eq!(g.old[0].limit, 125);
+    g.old[0].in_flight = 125;
+    g.new[0].in_flight = 50;
+    g.advance(
+        6000,
+        AccountHandoffFeedback {
+            successes: 20,
+            last_success_at_ms: 6000,
+            ..Default::default()
+        },
+    );
+    assert_eq!(g.old[0].limit, 150);
+    g.new[0].ceiling = 200;
+    for i in 2..=32 {
+        let now = 1000 + i * 5000;
+        g.old[0].in_flight = g.old[0].limit;
+        g.new[0].in_flight = 50;
+        g.advance(
+            now,
+            AccountHandoffFeedback {
+                successes: i * 20,
+                last_success_at_ms: now,
+                ..Default::default()
+            },
+        );
+        assert!(g.old[0].limit >= 66 && g.old[0].limit <= 150);
+    }
+    assert_eq!(g.old[0].limit, 66);
+}
+
+#[test]
+fn handoff_transfer_restoration_cannot_exceed_lower_manual_donor_limit() {
+    let mut g = group();
+    g.old = vec![TransferMember {
+        limit: 66,
+        in_flight: 66,
+        ..member("acct_old", 150, 80, 2000)
+    }];
+    g.new[0].ceiling = 100;
+    g.new[0].in_flight = 100;
+    g.budget = 84;
+    g.advance(6000, AccountHandoffFeedback::default());
+    assert_eq!(g.old[0].limit, 80);
+    assert_eq!(g.new[0].limit, 100);
+}
+
+#[test]
+fn handoff_transfer_completed_unlimited_receiver_uses_original_configuration() {
+    let mut receiver = pool_candidate("acct_new", 180, false, None);
+    receiver.transfer = Some(AccountTransferCapacity {
+        group_id: "group".into(),
+        donor: false,
+        limit: u32::MAX,
+        reference_concurrency: 150,
+        peers: vec!["acct_old".into()],
+    });
+    let mut ctx = context(RotationStrategy::QuotaResetPriority);
+    ctx.policy = AccountSelectionPolicy::new(
+        RotationStrategy::QuotaResetPriority,
+        AccountConcurrency::new(0),
+    );
+    assert_eq!(ctx.concurrency_limit(&receiver).get(), 0);
+    let mut warming = pool_candidate("acct_warming", 10, false, Some(50));
+    warming.transfer = Some(AccountTransferCapacity {
+        group_id: "group".into(),
+        donor: false,
+        limit: 50,
+        reference_concurrency: 150,
+        peers: vec!["acct_old".into()],
+    });
+    assert_eq!(
+        AccountSelector
+            .select(&[receiver.clone(), warming], &ctx)
+            .unwrap()
+            .candidate()
+            .account
+            .id()
+            .as_str(),
+        "acct_warming"
+    );
+    receiver.warmup_limit = Some(50);
+    assert_eq!(ctx.concurrency_limit(&receiver).get(), 50);
+}
+
+#[test]
+fn handoff_transfer_does_not_count_unknown_or_stale_capacity_as_growth_room() {
+    for unavailable in [true, false] {
+        let mut g = group();
+        g.old[0].limit = 70;
+        g.old[1].limit = 100;
+        g.old.iter_mut().for_each(|m| m.in_flight = m.limit);
+        g.new[0].in_flight = 50;
+        g.old[0].available = !unavailable;
+        let before = g.old[0].limit;
+        g.advance(
+            if unavailable { 6000 } else { 61000 },
+            AccountHandoffFeedback {
+                successes: 10,
+                last_success_at_ms: 6000,
+                ..Default::default()
+            },
+        );
+        assert_eq!(g.old[0].limit, before);
+        assert!(g.stable_since_ms.is_none());
     }
 }
 #[test]
@@ -432,6 +626,7 @@ fn handoff_pool_balance_survives_group_end_and_does_not_create_pairing() {
         group_id: "active".into(),
         donor: false,
         limit: 80,
+        reference_concurrency: 150,
         peers: vec!["acct_retiring".into()],
     });
     assert_eq!(
@@ -597,6 +792,7 @@ fn handoff_transfer_stability_and_failure_apply_to_total_not_each_donor() {
 #[test]
 fn handoff_transfer_waits_for_growth_and_pending_drain_before_next_step() {
     let mut full = group();
+    full.old.iter_mut().for_each(|m| m.limit = 0);
     full.new[0].in_flight = full.new[0].ceiling;
     full.rebalance();
     assert_eq!(full.budget, 0);
@@ -613,7 +809,7 @@ fn handoff_transfer_waits_for_growth_and_pending_drain_before_next_step() {
     g.new[0].ceiling = 100;
     g.rebalance();
     g.old.iter_mut().for_each(|m| m.in_flight = m.limit);
-    g.new[0].in_flight = 90;
+    g.new[0].in_flight = 70;
     for i in 1..=9 {
         let now = 1000 + i * 5000;
         g.advance(
@@ -626,7 +822,7 @@ fn handoff_transfer_waits_for_growth_and_pending_drain_before_next_step() {
         );
     }
     assert_eq!(g.budget, 50, "增长流量已经占用承接容量");
-    g.new[0].in_flight = 50;
+    g.new[0].in_flight = 20;
     g.old[0].in_flight = g.old[0].limit + 30;
     g.advance(
         51000,
@@ -636,7 +832,7 @@ fn handoff_transfer_waits_for_growth_and_pending_drain_before_next_step() {
             ..Default::default()
         },
     );
-    assert_eq!(g.budget, 50, "上一档转移仍有老号请求在途");
+    assert_eq!(g.budget, 50, "上一档转移仍有老号请求在途且须预留增长容量");
     g.old[0].in_flight = g.old[0].limit;
     g.advance(
         56000,

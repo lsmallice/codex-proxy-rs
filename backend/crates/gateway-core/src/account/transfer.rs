@@ -128,6 +128,8 @@ pub struct AccountTransferCapacity {
     pub group_id: String,
     pub donor: bool,
     pub limit: u32,
+    #[serde(default)]
+    pub reference_concurrency: u32,
     pub peers: Vec<String>,
 }
 
@@ -253,6 +255,13 @@ impl AccountTransferGroup {
                         group_id: self.id.clone(),
                         donor,
                         limit: m.limit,
+                        reference_concurrency: self
+                            .config
+                            .new_account_protection
+                            .as_ref()
+                            .map_or(self.config.initial_new_concurrency, |c| {
+                                c.release_concurrency
+                            }),
                         peers: peers
                             .iter()
                             .filter(|p| p.available && !p.terminal)
@@ -268,6 +277,9 @@ impl AccountTransferGroup {
             .iter()
             .filter(|m| m.available && !m.terminal)
             .fold(0u32, |sum, m| sum.saturating_add(m.ceiling))
+    }
+    fn growth_reserve(&self) -> u32 {
+        self.config.decrement.min(self.receiver_capacity() / 2)
     }
     fn transferable_capacity(&self) -> u32 {
         self.old
@@ -308,8 +320,16 @@ impl AccountTransferGroup {
         let capacity = self.receiver_capacity();
         let mut total = self.budget.min(capacity).min(self.transferable_capacity());
         if self.old.iter().all(|old| old.limit == 0) {
-            let occupied = self.new.iter().map(|m| m.in_flight).sum::<u32>();
-            total = total.min(capacity.saturating_sub(occupied));
+            let occupied = self
+                .new
+                .iter()
+                .fold(0u32, |n, m| n.saturating_add(m.in_flight));
+            // 首档也保留全组一档增长余量，不能把新号空位全部承诺给老号
+            total = total.min(
+                capacity
+                    .saturating_sub(occupied)
+                    .saturating_sub(self.growth_reserve()),
+            );
         }
         self.budget = total;
         let departed = self
@@ -340,6 +360,7 @@ impl AccountTransferGroup {
         }
     }
     pub fn advance(&mut self, now: u64, feedback: AccountHandoffFeedback) {
+        let clock_reversed = now < self.checked_at_ms;
         let gap = now.saturating_sub(self.checked_at_ms);
         self.checked_at_ms = now;
         if self.old.iter().all(|m| m.terminal) || self.new.iter().all(|m| m.terminal) {
@@ -358,9 +379,63 @@ impl AccountTransferGroup {
             self.rebalance();
             return;
         }
-        if gap > 15000 {
+        if clock_reversed || gap > 15000 || self.old.iter().any(|m| !m.available && !m.terminal) {
             self.stable_since_ms = None;
             self.observed_successes = feedback.successes;
+            self.message = "交接观测不连续或老号暂不可用，保持当前档位".into();
+            return;
+        }
+        let reserve = self.growth_reserve();
+        let capacity = self.receiver_capacity();
+        let total_capacity = self
+            .old
+            .iter()
+            .filter(|m| m.available && !m.terminal)
+            .map(|m| u64::from(m.limit.min(m.ceiling)))
+            .sum::<u64>()
+            + u64::from(capacity);
+        let occupied = self
+            .old
+            .iter()
+            .chain(&self.new)
+            .filter(|m| !m.terminal)
+            .map(|m| u64::from(m.in_flight))
+            .sum::<u64>();
+        let spare = total_capacity
+            .saturating_sub(occupied)
+            .min(u64::from(u32::MAX)) as u32;
+        let departed = self
+            .old
+            .iter()
+            .filter(|m| m.terminal)
+            .fold(0u32, |n, m| n.saturating_add(m.baseline));
+        let restorable = self
+            .old
+            .iter()
+            .filter(|m| m.available && !m.terminal)
+            .fold(0u32, |n, m| {
+                n.saturating_add(m.baseline.min(m.ceiling).saturating_sub(m.limit))
+            });
+        // 只撤回已减载容量，不创造更高的老号基线，也不改变新号保护档位
+        let restore = reserve
+            .saturating_sub(spare)
+            .min(self.config.decrement)
+            .min(restorable)
+            .min(self.budget.saturating_sub(departed));
+        if restore > 0
+            && self
+                .old
+                .iter()
+                .filter(|m| !m.terminal)
+                .all(|m| m.remaining_basis_points.is_some_and(|v| v > 0))
+        {
+            self.budget -= restore;
+            self.previous_budget = self.budget;
+            self.stable_since_ms = None;
+            self.observed_successes = feedback.successes;
+            self.message = "增长余量不足，小步恢复老号已验证容量".into();
+            self.rebalance();
+            return;
         }
         if self.new.iter().all(|m| m.in_flight == 0)
             && now.saturating_sub(feedback.last_success_at_ms) > 15000
@@ -383,22 +458,25 @@ impl AccountTransferGroup {
         {
             let allocated = self.budget;
             let capacity = self.receiver_capacity();
-            let occupied: u32 = self.new.iter().map(|m| m.in_flight).sum();
-            let pending: u32 = self
-                .old
+            let occupied = self
+                .new
                 .iter()
-                .filter(|m| !m.terminal)
-                .map(|m| m.in_flight.saturating_sub(m.limit))
-                .sum();
+                .fold(0u32, |n, m| n.saturating_add(m.in_flight));
+            let pending: u32 = self.old.iter().filter(|m| !m.terminal).fold(0u32, |n, m| {
+                n.saturating_add(m.in_flight.saturating_sub(m.limit))
+            });
             let next = allocated
                 .saturating_add(self.config.decrement)
                 .min(capacity)
                 .min(self.transferable_capacity());
             // 增长流量和上一档尚未排空的老号请求都占承接余量，不能重复许诺空位
             if next.saturating_sub(allocated)
-                > capacity.saturating_sub(occupied).saturating_sub(pending)
+                > capacity
+                    .saturating_sub(occupied)
+                    .saturating_sub(pending)
+                    .saturating_sub(reserve)
             {
-                self.message = "承接容量已占用，保持老号当前上限".into();
+                self.message = "承接或增长余量不足，保持老号当前上限".into();
                 self.rebalance();
                 return;
             }

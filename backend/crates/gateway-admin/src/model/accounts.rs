@@ -78,6 +78,7 @@ pub struct AccountListQuery {
     pub group_filter: Option<AccountGroupFilter>,
     pub search: Option<String>,
     pub status: Option<AccountStatus>,
+    pub added_after: Option<DateTime<Utc>>,
     pub sort: Option<AccountSort>,
 }
 

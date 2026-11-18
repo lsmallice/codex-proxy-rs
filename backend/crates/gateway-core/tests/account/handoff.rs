@@ -14,6 +14,7 @@ fn handoff(total: u32) -> AccountHandoff {
         ["acct_old".into(), "acct_new".into()],
         [total, 0],
         None,
+        None,
         1000,
     )
     .unwrap()
@@ -29,6 +30,8 @@ fn observe(state: &mut AccountHandoff, now: u64, successes: u64, failures: u64, 
             new_finished: false,
             old_in_flight: 50,
             new_in_flight: active,
+            old_concurrency_limit: None,
+            new_concurrency_limit: None,
         },
         AccountHandoffFeedback {
             successes,
@@ -72,6 +75,8 @@ fn handoff_reduces_by_thirty_and_retains_fifty_until_exhausted() {
             new_finished: false,
             old_in_flight: 12,
             new_in_flight: 100,
+            old_concurrency_limit: None,
+            new_concurrency_limit: None,
         },
         AccountHandoffFeedback::default(),
     );
@@ -98,6 +103,8 @@ fn handoff_terminal_accounts_exit_paused_state_without_requiring_new_quota_or_tr
                 new_finished,
                 old_in_flight: 3,
                 new_in_flight: 2,
+                old_concurrency_limit: None,
+                new_concurrency_limit: None,
             },
             AccountHandoffFeedback::default(),
         );
@@ -123,6 +130,8 @@ fn handoff_temporary_unavailability_resumes_with_a_fresh_observation_window() {
                 new_finished: false,
                 old_in_flight: 0,
                 new_in_flight: 0,
+                old_concurrency_limit: None,
+                new_concurrency_limit: None,
             },
             AccountHandoffFeedback {
                 successes: 10,
@@ -187,7 +196,7 @@ fn handoff_observation_gap_does_not_count_as_stable_time() {
     observe(&mut s, 6000, 1, 0, 50);
     observe(&mut s, 66000, 20, 0, 50);
     assert_eq!(s.old_limit, 100);
-    assert_eq!(s.stable_since_ms, Some(66000));
+    assert_eq!(s.stable_since_ms, None);
 }
 
 #[test]
@@ -208,10 +217,126 @@ fn handoff_rejects_invalid_config_and_preserves_lower_manual_ceiling() {
             ["o".into(), "n".into()],
             [30, 0],
             Some(30),
+            None,
             0
         )
         .is_err()
     );
+}
+
+#[test]
+fn handoff_finite_receiver_keeps_initial_growth_reserve() {
+    for (configured, protected, expected) in [
+        (Some(50), false, 125),
+        (None, true, 125),
+        (Some(40), true, 130),
+        (Some(20), false, 140),
+    ] {
+        let mut config = AccountHandoffConfig::default();
+        if protected {
+            config.new_account_protection = Some(Default::default());
+        }
+        let state = AccountHandoff::start(
+            StartAccountHandoff {
+                request_id: "bounded".into(),
+                old_account_id: "acct_old".into(),
+                new_account_id: "acct_new".into(),
+                config,
+            },
+            ["Old".into(), "New".into()],
+            [150, 0],
+            None,
+            configured,
+            1000,
+        )
+        .unwrap();
+        assert_eq!(state.old_limit, expected);
+        assert_eq!(state.initial_old_limit, 150);
+    }
+}
+
+fn bounded_observation(now: u64, old: u32, new: u32, limit: u32) -> AccountHandoffObservation {
+    AccountHandoffObservation {
+        now_ms: now,
+        old_available: true,
+        new_available: true,
+        old_finished: false,
+        new_finished: false,
+        old_in_flight: old,
+        new_in_flight: new,
+        old_concurrency_limit: None,
+        new_concurrency_limit: Some(limit),
+    }
+}
+
+#[test]
+fn handoff_saturated_pair_restores_one_step_and_respects_manual_ceiling() {
+    let mut state = handoff(150);
+    state.old_limit = 66;
+    state.previous_old_limit = 96;
+    let mut observation = bounded_observation(6000, 66, 50, 50);
+    observation.old_concurrency_limit = Some(80);
+    state.advance(
+        observation,
+        AccountHandoffFeedback {
+            successes: 10,
+            last_success_at_ms: 6000,
+            ..Default::default()
+        },
+    );
+    assert_eq!(state.old_limit, 80);
+    assert!(state.stable_since_ms.is_none());
+    observation.now_ms = 11000;
+    observation.old_in_flight = 80;
+    state.advance(
+        observation,
+        AccountHandoffFeedback {
+            successes: 15,
+            last_success_at_ms: 11000,
+            ..Default::default()
+        },
+    );
+    assert_eq!(state.old_limit, 80);
+}
+
+#[test]
+fn handoff_drain_waits_for_new_capacity_and_pending_old_requests() {
+    let mut state = handoff(150);
+    state.old_limit = 150;
+    state.previous_old_limit = 150;
+    for i in 1..=9 {
+        let now = 1000 + i * 5000;
+        state.advance(
+            bounded_observation(now, 150, 40, 50),
+            AccountHandoffFeedback {
+                successes: i * 4,
+                last_success_at_ms: now,
+                ..Default::default()
+            },
+        );
+    }
+    assert_eq!(state.old_limit, 150);
+    state.advance(
+        bounded_observation(51000, 150, 40, 100),
+        AccountHandoffFeedback {
+            successes: 40,
+            last_success_at_ms: 51000,
+            ..Default::default()
+        },
+    );
+    assert_eq!(state.old_limit, 120);
+    for i in 11..=18 {
+        let now = 1000 + i * 5000;
+        state.advance(
+            bounded_observation(now, 150, 40, 100),
+            AccountHandoffFeedback {
+                successes: i * 4,
+                last_success_at_ms: now,
+                ..Default::default()
+            },
+        );
+    }
+    assert_eq!(state.old_limit, 120);
 }
 
 #[test]

@@ -138,6 +138,10 @@ pub(super) async fn prepare(
                 .effective_concurrency(configured.max_concurrent_per_account())
                 .limit()
                 .map(|n| n.get()),
+            new.account
+                .effective_concurrency(configured.max_concurrent_per_account())
+                .limit()
+                .map(|n| n.get()),
             now_ms,
         )
         .map_err(|_| {

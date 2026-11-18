@@ -54,6 +54,7 @@ pub struct ListQuery {
     pub group_id: Option<String>,
     pub search: Option<String>,
     pub status: Option<String>,
+    pub added_after: Option<String>,
     pub sort_by: Option<String>,
     pub sort_direction: Option<String>,
 }
@@ -202,6 +203,14 @@ impl ListQuery {
             }),
             _ => return Err(WireValidationError::new("sort")),
         };
+        let added_after = self
+            .added_after
+            .map(|value| {
+                chrono::DateTime::parse_from_rfc3339(value.trim())
+                    .map(|time| time.with_timezone(&chrono::Utc))
+                    .map_err(|_| WireValidationError::new("addedAfter"))
+            })
+            .transpose()?;
         Ok(AccountListQuery {
             page,
             page_size: PageSize::new(
@@ -212,6 +221,7 @@ impl ListQuery {
             group_filter,
             search,
             status,
+            added_after,
             sort,
         })
     }

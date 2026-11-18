@@ -296,6 +296,12 @@ impl RedisAccountHandoffStore {
 }
 
 impl AccountHandoffStore for RedisAccountHandoffStore {
+    fn warmup_capacities(
+        &self,
+        ids: Vec<ProviderAccountId>,
+    ) -> BoxFuture<'_, Result<BTreeMap<ProviderAccountId, Option<u32>>, ProviderStoreError>> {
+        Box::pin(async move { self.warmup_limits(&ids).await })
+    }
     fn transfer_samples(
         &self,
         samples: Vec<gateway_core::account::TransferQuotaSample>,

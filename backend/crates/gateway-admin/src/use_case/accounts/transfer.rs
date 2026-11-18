@@ -236,6 +236,19 @@ impl DefaultAccountsService {
             let now = Utc::now().timestamp_millis() as u64;
             let rev = item.state.revision;
             let ids: Vec<_> = item.state.participant_ids().map(str::to_owned).collect();
+            let receiver_ids = item
+                .state
+                .new
+                .iter()
+                .map(|m| {
+                    ProviderAccountId::new(m.id.clone())
+                        .map_err(|_| AdminError::internal("交接账号 ID 无效"))
+                })
+                .collect::<Result<Vec<_>, _>>()?;
+            let protections = store
+                .warmup_capacities(receiver_ids)
+                .await
+                .map_err(store_error)?;
             let mut observed = Vec::new();
             let runtime = self
                 .account_runtime
@@ -285,15 +298,21 @@ impl DefaultAccountsService {
                         .min(if donor {
                             u32::MAX
                         } else {
-                            warm.iter().find(|w| w.state.account_id == m.id).map_or(
-                                item.state
-                                    .config
-                                    .new_account_protection
-                                    .as_ref()
-                                    .unwrap()
-                                    .release_concurrency,
-                                |w| w.state.limit,
-                            )
+                            match protections.get(
+                                &ProviderAccountId::new(m.id.clone())
+                                    .map_err(|_| AdminError::internal("交接账号 ID 无效"))?,
+                            ) {
+                                Some(Some(limit)) => *limit,
+                                Some(None) => u32::MAX,
+                                None => {
+                                    item.state
+                                        .config
+                                        .new_account_protection
+                                        .as_ref()
+                                        .unwrap()
+                                        .initial_concurrency
+                                }
+                            }
                         });
                     observed.push(a);
                 }
@@ -341,7 +360,12 @@ impl DefaultAccountsService {
                         gateway_core::account::TransferRoleObservation {
                             created_at_ms: u64::try_from(a.account.created_at.timestamp_millis())
                                 .ok()?,
-                            protected: warm.iter().any(|w| w.state.account_id == a.account.id),
+                            protected: warm.iter().any(|w| w.state.account_id == a.account.id)
+                                || protections.iter().any(|(id, state)| {
+                                    id.as_str() == a.account.id && state.is_some()
+                                })
+                                || (item.state.new.iter().any(|m| m.id == a.account.id)
+                                    && !protections.keys().any(|id| id.as_str() == a.account.id)),
                         },
                     ))
                 })

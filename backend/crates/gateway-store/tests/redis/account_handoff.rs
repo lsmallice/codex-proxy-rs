@@ -44,6 +44,7 @@ fn state() -> AccountHandoff {
         ["acct_old".into(), "acct_new".into()],
         [150, 0],
         None,
+        None,
         now,
     )
     .unwrap()
@@ -240,6 +241,190 @@ async fn handoff_group_redis_join_cas_and_shared_cap_survive_restarts() {
     for guard in guards {
         guard.release().await.unwrap();
     }
+}
+
+#[tokio::test]
+async fn handoff_group_pressure_restoration_preserves_receiver_cap_and_atomic_feedback() {
+    let (Some(database), Some(redis)) = (
+        crate::support::test_env("CPR_TEST_DATABASE_URL"),
+        crate::support::test_env("CPR_TEST_REDIS_URL"),
+    ) else {
+        return;
+    };
+    let mut config: gateway_store::StoreConfig = serde_json::from_value(serde_json::json!({
+        "database":crate::support::config_connection(url::Url::parse(&database).unwrap()),
+        "redis":crate::support::config_connection(url::Url::parse(&redis).unwrap()),
+    }))
+    .unwrap();
+    let directory = tempfile::tempdir().unwrap();
+    config.resolve_and_validate(directory.path()).unwrap();
+    let bundle = gateway_store::initialize(config).await.unwrap();
+    let store = bundle.provider_ports().handoffs().unwrap();
+    let leases = bundle.provider_ports().leases();
+    let mut g = transfer_group();
+    g.old.truncate(1);
+    g.old[0].baseline = 150;
+    g.old[0].in_flight = 150;
+    let old_id = format!("acct_old_{}", Uuid::new_v4());
+    let new_id = format!("acct_new_{}", Uuid::new_v4());
+    g.old[0].id = old_id.clone();
+    g.new[0].id = new_id.clone();
+    g.group_id = format!("grp_{}", Uuid::new_v4());
+    g.rebalance();
+    assert_eq!(g.old[0].limit, 125);
+    let group_id = g.id.clone();
+    assert!(store.save_transfer_group(g, 0, 0).await.unwrap());
+    let request = |id: &str| {
+        ProviderLeaseRequest::Scheduling(
+            ProviderSchedulingLeaseRequest::new(
+                ProviderKind::new("openai").unwrap(),
+                ProviderAccountId::new(id).unwrap(),
+                CredentialRevision::new(1).unwrap(),
+                AccountConcurrency::new(0),
+                SystemTime::now() + Duration::from_secs(60),
+            )
+            .with_account_handoff(Some(group_id.clone())),
+        )
+    };
+    let mut guards = Vec::new();
+    for (id, count) in [(old_id.as_str(), 125), (new_id.as_str(), 50)] {
+        for _ in 0..count {
+            let result = leases.try_acquire(request(id)).await.unwrap();
+            let ProviderLeaseAcquisition::Acquired(guard) = result else {
+                panic!("initial capacity unavailable")
+            };
+            guards.push(guard);
+        }
+    }
+    let mut item = store
+        .transfer_groups()
+        .await
+        .unwrap()
+        .into_iter()
+        .find(|g| g.state.id == group_id)
+        .unwrap();
+    item.state.old[0].in_flight = 125;
+    item.state.new[0].in_flight = 50;
+    item.state.advance(5001, item.feedback);
+    assert_eq!(item.state.old[0].limit, 150);
+    store.feedback(new_id.clone(), false, None).await.unwrap();
+    assert!(
+        !store
+            .save_transfer_group(item.state.clone(), 1, 0)
+            .await
+            .unwrap()
+    );
+    assert_eq!(
+        store
+            .transfer_groups()
+            .await
+            .unwrap()
+            .iter()
+            .find(|g| g.state.id == group_id)
+            .unwrap()
+            .state
+            .old[0]
+            .limit,
+        125
+    );
+    let mut fresh = store
+        .transfer_groups()
+        .await
+        .unwrap()
+        .into_iter()
+        .find(|g| g.state.id == group_id)
+        .unwrap();
+    fresh.state.old[0].in_flight = 125;
+    fresh.state.new[0].in_flight = 50;
+    fresh.state.advance(5001, fresh.feedback);
+    assert!(
+        store
+            .save_transfer_group(fresh.state, 1, fresh.feedback.failures)
+            .await
+            .unwrap()
+    );
+    for (id, want) in [(old_id.as_str(), 25), (new_id.as_str(), 0)] {
+        let mut admitted = 0;
+        for _ in 0..25 {
+            let result = leases.try_acquire(request(id)).await.unwrap();
+            if let ProviderLeaseAcquisition::Acquired(guard) = result {
+                admitted += 1;
+                guards.push(guard);
+            }
+        }
+        assert_eq!(admitted, want);
+    }
+    let limits = store
+        .warmup_capacities(vec![ProviderAccountId::new(&new_id).unwrap()])
+        .await
+        .unwrap();
+    assert_eq!(
+        limits.get(&ProviderAccountId::new(&new_id).unwrap()),
+        Some(&Some(50))
+    );
+    let warm = store
+        .warmups()
+        .await
+        .unwrap()
+        .into_iter()
+        .find(|w| w.state.account_id == new_id)
+        .unwrap();
+    let mut completed = warm.state;
+    completed.finished = true;
+    assert!(
+        store
+            .update_warmup(completed, warm.feedback.failures)
+            .await
+            .unwrap()
+    );
+    assert_eq!(
+        store
+            .warmup_capacities(vec![ProviderAccountId::new(&new_id).unwrap()])
+            .await
+            .unwrap()
+            .get(&ProviderAccountId::new(&new_id).unwrap()),
+        Some(&None)
+    );
+    let mut released = store
+        .transfer_groups()
+        .await
+        .unwrap()
+        .into_iter()
+        .find(|g| g.state.id == group_id)
+        .unwrap();
+    released.state.new[0].ceiling = u32::MAX;
+    released.state.rebalance();
+    assert!(
+        store
+            .save_transfer_group(released.state, 2, 1)
+            .await
+            .unwrap()
+    );
+    for _ in 0..80 {
+        let ProviderLeaseAcquisition::Acquired(guard) =
+            leases.try_acquire(request(&new_id)).await.unwrap()
+        else {
+            panic!("completed protection must not keep the old receiver ceiling");
+        };
+        guards.push(guard);
+    }
+    for guard in guards {
+        guard.release().await.unwrap();
+    }
+    let mut finished = store
+        .transfer_groups()
+        .await
+        .unwrap()
+        .into_iter()
+        .find(|g| g.state.id == group_id)
+        .unwrap();
+    finished.state.finished = true;
+    assert!(
+        store
+            .save_transfer_group(finished.state, 3, 1)
+            .await
+            .unwrap()
+    );
 }
 
 #[tokio::test]

@@ -19,9 +19,25 @@ struct HandoffProjectionStore {
     fail: AtomicBool,
     transfers: Mutex<Vec<AccountTransferSnapshot>>,
     samples: Mutex<BTreeMap<String, Vec<TransferQuotaSample>>>,
+    protection_limits: Mutex<BTreeMap<ProviderAccountId, Option<u32>>>,
 }
 
 impl AccountHandoffStore for HandoffProjectionStore {
+    fn warmup_capacities(
+        &self,
+        ids: Vec<ProviderAccountId>,
+    ) -> BoxFuture<'_, Result<BTreeMap<ProviderAccountId, Option<u32>>, ProviderStoreError>> {
+        Box::pin(async move {
+            Ok(self
+                .protection_limits
+                .lock()
+                .unwrap()
+                .iter()
+                .filter(|(id, _)| ids.contains(id))
+                .map(|(id, v)| (id.clone(), *v))
+                .collect())
+        })
+    }
     fn transfer_groups(
         &self,
     ) -> BoxFuture<'_, Result<Vec<AccountTransferSnapshot>, ProviderStoreError>> {
@@ -154,11 +170,13 @@ async fn reconcile_fixture(
         ["Old".into(), "New".into()],
         [150, 0],
         None,
+        None,
         1000,
     )
     .unwrap();
     state.phase = AccountHandoffPhase::Paused;
     let store = Arc::new(HandoffProjectionStore {
+        protection_limits: Mutex::default(),
         snapshots: Mutex::new(vec![AccountHandoffSnapshot {
             state,
             feedback: Default::default(),
@@ -190,6 +208,95 @@ fn named_account(id: &str) -> AccountRecord {
     let mut account = account_record("openai");
     account.id = id.into();
     account
+}
+
+#[tokio::test]
+async fn handoff_transfer_receiver_requires_completion_receipt_to_release_stale_group_ceiling() {
+    use gateway_core::account::AccountHandoffConfig;
+    let gid = "grp_00000000000000000000000000000091";
+    let mut old = named_account("acct_old");
+    let mut new = named_account("acct_new");
+    for a in [&mut old, &mut new] {
+        a.groups = vec![gateway_admin::model::account_groups::AccountGroupRef {
+            id: gateway_core::routing::AccountGroupId::new(gid).unwrap(),
+            name: "Pool".into(),
+            color: gateway_admin::model::account_groups::AccountGroupColor::parse("#0F766EFF")
+                .unwrap(),
+            enabled: true,
+        }];
+        a.concurrency_limit = gateway_core::account::AccountConcurrencyLimit::new(500);
+    }
+    let (services, accounts, store) = reconcile_fixture(Some(old), Some(new)).await;
+    store.snapshots.lock().unwrap().clear();
+    let now = Utc::now().timestamp_millis() as u64;
+    let member = |id: &str, limit| TransferMember {
+        id: id.into(),
+        name: id.into(),
+        baseline: 100,
+        limit,
+        available: true,
+        terminal: false,
+        in_flight: 0,
+        remaining_basis_points: Some(5000),
+        remaining_seconds: None,
+        ceiling: 500,
+    };
+    store
+        .transfers
+        .lock()
+        .unwrap()
+        .push(AccountTransferSnapshot {
+            state: AccountTransferGroup {
+                id: "limits".into(),
+                group_id: gid.into(),
+                automatic: false,
+                policy_revision: 0,
+                revision: 1,
+                config: AccountHandoffConfig {
+                    transfer_group: Some(Default::default()),
+                    new_account_protection: Some(Default::default()),
+                    ..Default::default()
+                },
+                created_at_ms: now - 60000,
+                checked_at_ms: now,
+                old: vec![member("acct_old", 100)],
+                new: vec![member("acct_new", 50)],
+                budget: 0,
+                previous_budget: 0,
+                stable_since_ms: None,
+                observed_successes: 0,
+                observed_failures: 0,
+                finished: false,
+                message: String::new(),
+            },
+            feedback: Default::default(),
+        });
+    let id = ProviderAccountId::new("acct_new").unwrap();
+    for (receipt, expected) in [(None, 50), (Some(Some(80)), 80), (Some(None), 500)] {
+        store.protection_limits.lock().unwrap().clear();
+        if let Some(value) = receipt {
+            store
+                .protection_limits
+                .lock()
+                .unwrap()
+                .insert(id.clone(), value);
+        }
+        services.accounts().reconcile_handoffs().await.unwrap();
+        assert_eq!(
+            store.transfers.lock().unwrap()[0].state.new[0].limit,
+            expected
+        );
+    }
+    accounts
+        .accounts
+        .lock()
+        .unwrap()
+        .iter_mut()
+        .find(|a| a.id == "acct_new")
+        .unwrap()
+        .concurrency_limit = gateway_core::account::AccountConcurrencyLimit::new(20);
+    services.accounts().reconcile_handoffs().await.unwrap();
+    assert_eq!(store.transfers.lock().unwrap()[0].state.new[0].limit, 20);
 }
 
 #[tokio::test]
@@ -285,6 +392,7 @@ async fn transfer_reconcile_refreshes_priority_and_discards_stale_quota_without_
         );
     }
     let store = Arc::new(HandoffProjectionStore {
+        protection_limits: Mutex::default(),
         snapshots: Mutex::default(),
         reads: AtomicUsize::new(0),
         fail: AtomicBool::new(false),
@@ -373,6 +481,11 @@ async fn transfer_reconcile_refreshes_priority_and_discards_stale_quota_without_
             .all(|q| !q.refresh)
     );
     // 同组追加更新账号后，低额度承接账号在五秒维护中转入消耗层
+    store
+        .protection_limits
+        .lock()
+        .unwrap()
+        .insert(ProviderAccountId::new("acct_new").unwrap(), None);
     {
         let mut data = accounts.accounts.lock().unwrap();
         let mut newest = data.iter().find(|a| a.id == "acct_new").unwrap().clone();
@@ -546,6 +659,7 @@ async fn reconcile_failed_observation_does_not_end_or_rewrite_handoffs() {
 
 fn query() -> AccountListQuery {
     AccountListQuery {
+        added_after: None,
         page: 1,
         page_size: gateway_admin::model::PageSize::new(20).unwrap(),
         provider_kind: None,
@@ -578,10 +692,12 @@ async fn handoff_capacity_is_scoped_to_old_account_and_preserves_configured_limi
             ["Old".into(), "New".into()],
             [100, 0],
             None,
+            None,
             1000,
         )
         .unwrap();
         let store = Arc::new(HandoffProjectionStore {
+            protection_limits: Mutex::default(),
             snapshots: Mutex::new(vec![AccountHandoffSnapshot {
                 state,
                 feedback: Default::default(),

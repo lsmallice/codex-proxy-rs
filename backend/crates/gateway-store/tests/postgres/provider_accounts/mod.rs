@@ -810,6 +810,7 @@ async fn terminal_admin_list_filters_and_sorts_before_pagination_with_retained_u
     let usage_page = store
         .list_accounts(
             AccountListQuery {
+                added_after: None,
                 page: 1,
                 page_size: PageSize::new(2).expect("page size"),
                 provider_kind: None,
@@ -854,6 +855,7 @@ async fn terminal_admin_list_filters_and_sorts_before_pagination_with_retained_u
     let last_used_page = store
         .list_accounts(
             AccountListQuery {
+                added_after: None,
                 page: 1,
                 page_size: PageSize::new(2).expect("page size"),
                 provider_kind: None,
@@ -881,6 +883,7 @@ async fn terminal_admin_list_filters_and_sorts_before_pagination_with_retained_u
     let filtered = store
         .list_accounts(
             AccountListQuery {
+                added_after: None,
                 page: 1,
                 page_size: PageSize::new(10).expect("page size"),
                 provider_kind: Some(ProviderKind::new("openai").expect("Provider kind")),
@@ -901,6 +904,7 @@ async fn terminal_admin_list_filters_and_sorts_before_pagination_with_retained_u
     let rate_limited = store
         .list_accounts(
             AccountListQuery {
+                added_after: None,
                 page: 1,
                 page_size: PageSize::new(10).expect("page size"),
                 provider_kind: None,
@@ -928,6 +932,7 @@ async fn terminal_admin_list_filters_and_sorts_before_pagination_with_retained_u
     let email_domain_page = store
         .list_accounts(
             AccountListQuery {
+                added_after: None,
                 page: 2,
                 page_size: PageSize::new(2).expect("page size"),
                 provider_kind: None,
@@ -947,6 +952,7 @@ async fn terminal_admin_list_filters_and_sorts_before_pagination_with_retained_u
     let error_accounts = store
         .list_accounts(
             AccountListQuery {
+                added_after: None,
                 page: 1,
                 page_size: PageSize::new(10).expect("page size"),
                 provider_kind: None,
@@ -968,6 +974,7 @@ async fn terminal_admin_list_filters_and_sorts_before_pagination_with_retained_u
     let paused = store
         .list_accounts(
             AccountListQuery {
+                added_after: None,
                 page: 1,
                 page_size: PageSize::new(1).unwrap(),
                 provider_kind: None,
@@ -1451,6 +1458,7 @@ async fn account_rename_preserves_facts_and_is_searchable() {
         let page = store
             .list_accounts(
                 AccountListQuery {
+                    added_after: None,
                     page: 1,
                     page_size: PageSize::new(20).unwrap(),
                     provider_kind: None,

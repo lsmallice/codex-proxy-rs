@@ -79,8 +79,11 @@ impl DefaultAccountsService {
                     if let Some(item) = items.iter_mut().find(|i| i.account.id == id) {
                         let limit = u64::from(cap.limit);
                         // 承接上限属于交接，只有真实保护记录才显示新号保护
-                        item.handoff_limit =
-                            Some(item.capacity.total_slots.map_or(limit, |n| n.min(limit)));
+                        item.handoff_limit = if !cap.donor && cap.limit == u32::MAX {
+                            item.capacity.total_slots
+                        } else {
+                            Some(item.capacity.total_slots.map_or(limit, |n| n.min(limit)))
+                        };
                     }
                 }
             }
@@ -313,6 +316,9 @@ impl DefaultAccountsService {
             old.capacity
                 .total_slots
                 .map(|n| u32::try_from(n).unwrap_or(u32::MAX)),
+            new.capacity
+                .total_slots
+                .map(|n| u32::try_from(n).unwrap_or(u32::MAX)),
             now,
         )
         .map_err(AdminError::invalid)?;
@@ -400,6 +406,7 @@ impl DefaultAccountsService {
                 .await
                 .map_err(store_error)?;
         }
+        let warmups = store.warmups().await.map_err(store_error)?;
         for mut item in store.list().await.map_err(store_error)? {
             let old_id = ProviderAccountId::new(item.state.old_account_id.clone())
                 .map_err(|_| AdminError::internal("交接账号 ID 无效"))?;
@@ -448,6 +455,26 @@ impl DefaultAccountsService {
                     new_finished: new_terminal.is_some(),
                     old_in_flight: u32::try_from(old_count).unwrap_or(u32::MAX),
                     new_in_flight: u32::try_from(new_count).unwrap_or(u32::MAX),
+                    old_concurrency_limit: old
+                        .as_ref()
+                        .and_then(|a| a.capacity.total_slots)
+                        .map(|n| u32::try_from(n).unwrap_or(u32::MAX)),
+                    new_concurrency_limit: {
+                        let configured = new
+                            .as_ref()
+                            .and_then(|a| a.capacity.total_slots)
+                            .map(|n| u32::try_from(n).unwrap_or(u32::MAX));
+                        let protected = warmups
+                            .iter()
+                            .find(|w| {
+                                w.state.account_id == item.state.new_account_id && !w.state.finished
+                            })
+                            .map(|w| w.state.limit);
+                        match (configured, protected) {
+                            (Some(a), Some(b)) => Some(a.min(b)),
+                            (a, b) => a.or(b),
+                        }
+                    },
                 },
                 item.feedback,
             );

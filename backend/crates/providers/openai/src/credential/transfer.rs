@@ -201,18 +201,13 @@ pub(super) async fn prepare(
             let ceiling = if donor {
                 configured.unwrap_or(u32::MAX)
             } else {
-                configured.unwrap_or(warm.release_concurrency).min(
-                    scheduling
-                        .warmups()
-                        .get(c.account.id())
-                        .copied()
-                        .flatten()
-                        .unwrap_or(if warming(c) {
-                            warm.initial_concurrency
-                        } else {
-                            warm.release_concurrency
-                        }),
-                )
+                configured
+                    .unwrap_or(u32::MAX)
+                    .min(match scheduling.warmups().get(c.account.id()) {
+                        Some(Some(limit)) => *limit,
+                        Some(None) => u32::MAX,
+                        None => warm.initial_concurrency,
+                    })
             };
             let time = age(c).map(|v| (u64::from(config.healthy_minutes) * 60).saturating_sub(v));
             let left = estimates

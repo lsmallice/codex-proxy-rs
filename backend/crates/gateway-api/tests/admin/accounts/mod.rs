@@ -479,6 +479,30 @@ fn single_update_should_validate_optional_names_and_accept_clearing() {
 }
 
 #[test]
+fn account_list_added_after_accepts_zoned_instants_and_rejects_invalid_dates() {
+    use gateway_api::admin::accounts::ListQuery;
+    use serde_json::json;
+    for value in ["2026-11-18T08:00:00Z", "2026-11-18T16:00:00+08:00"] {
+        let query: ListQuery = serde_json::from_value(json!({"addedAfter":value})).unwrap();
+        assert_eq!(
+            query.validate().unwrap().added_after.unwrap().timestamp(),
+            1794988800
+        );
+    }
+    for value in ["", "2026-11-18", "2026-11-18T08:00:00", "not-a-date"] {
+        let query: ListQuery = serde_json::from_value(json!({"addedAfter":value})).unwrap();
+        assert_eq!(query.validate().unwrap_err().field(), "addedAfter");
+    }
+    assert!(
+        ListQuery::default()
+            .validate()
+            .unwrap()
+            .added_after
+            .is_none()
+    );
+}
+
+#[test]
 fn single_update_should_accept_optional_unicode_and_multiline_notes() {
     use gateway_api::admin::accounts::UpdateAccountRequest;
     use serde_json::json;

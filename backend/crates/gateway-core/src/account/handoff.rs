@@ -174,6 +174,8 @@ pub struct AccountHandoffObservation {
     pub new_finished: bool,
     pub old_in_flight: u32,
     pub new_in_flight: u32,
+    pub old_concurrency_limit: Option<u32>,
+    pub new_concurrency_limit: Option<u32>,
 }
 
 impl AccountHandoff {
@@ -182,6 +184,7 @@ impl AccountHandoff {
         names: [String; 2],
         used: [u32; 2],
         configured_limit: Option<u32>,
+        new_concurrency_limit: Option<u32>,
         now_ms: u64,
     ) -> Result<Self, &'static str> {
         command.config.validate()?;
@@ -189,12 +192,28 @@ impl AccountHandoff {
         if configured_limit.is_some_and(|limit| limit < floor) {
             return Err("老账号已有并发上限低于交接保留值");
         }
-        let limit = used[0]
-            .saturating_add(used[1])
-            .saturating_sub(command.config.initial_new_concurrency)
-            .max(floor);
-        let limit = configured_limit.map_or(limit, |n| limit.min(n));
-        let baseline = configured_limit.map_or(used[0].max(limit), |n| used[0].max(limit).min(n));
+        let baseline = configured_limit.map_or(used[0].max(floor), |n| used[0].max(floor).min(n));
+        let protected = command
+            .config
+            .new_account_protection
+            .as_ref()
+            .map(|c| c.initial_concurrency);
+        let ceiling = match (new_concurrency_limit, protected) {
+            (Some(a), Some(b)) => Some(a.min(b)),
+            (a, b) => a.or(b),
+        };
+        let transfer = command
+            .config
+            .initial_new_concurrency
+            .saturating_sub(used[1]);
+        let transfer = ceiling.map_or(transfer, |limit| {
+            transfer.min(
+                limit
+                    .saturating_sub(used[1])
+                    .saturating_sub(command.config.decrement.min(limit / 2)),
+            )
+        });
+        let limit = baseline.saturating_sub(transfer).max(floor);
         let [old_account_name, new_account_name] = names;
         Ok(Self {
             automatic: false,
@@ -231,11 +250,18 @@ impl AccountHandoff {
         if !self.phase.active() {
             return;
         }
+        let clock_reversed = observation.now_ms < self.checked_at_ms;
         let gap = observation.now_ms.saturating_sub(self.checked_at_ms);
         self.checked_at_ms = observation.now_ms;
         self.old_in_flight = observation.old_in_flight;
         self.new_in_flight = observation.new_in_flight;
         self.last_success_at_ms = feedback.last_success_at_ms;
+        let ceiling = observation
+            .old_concurrency_limit
+            .unwrap_or(u32::MAX)
+            .min(self.initial_old_limit);
+        self.old_limit = self.old_limit.min(ceiling);
+        self.previous_old_limit = self.previous_old_limit.min(ceiling);
         if observation.old_finished {
             self.phase = AccountHandoffPhase::Completed;
             self.stable_since_ms = None;
@@ -263,9 +289,33 @@ impl AccountHandoff {
             return;
         }
         // 重启、观测中断和无流量不能把时间空白算作稳定运行
-        if gap > HANDOFF_CHECK_SECONDS * 3000 {
+        if clock_reversed || gap > HANDOFF_CHECK_SECONDS * 3000 {
             self.stable_since_ms = None;
             self.observed_successes = feedback.successes;
+            self.phase = AccountHandoffPhase::Observing;
+            self.message = "交接观测不连续，保持当前档位并重新观察".into();
+            return;
+        }
+        if let Some(new_limit) = observation.new_concurrency_limit {
+            let reserve = self.config.decrement.min(new_limit / 2);
+            let occupied =
+                u64::from(observation.old_in_flight) + u64::from(observation.new_in_flight);
+            let spare = (u64::from(self.old_limit) + u64::from(new_limit))
+                .saturating_sub(occupied)
+                .min(u64::from(u32::MAX)) as u32;
+            let restore = reserve
+                .saturating_sub(spare)
+                .min(self.config.decrement)
+                .min(ceiling.saturating_sub(self.old_limit));
+            if restore > 0 {
+                self.old_limit += restore;
+                self.previous_old_limit = self.old_limit;
+                self.stable_since_ms = None;
+                self.observed_successes = feedback.successes;
+                self.phase = AccountHandoffPhase::Observing;
+                self.message = "增长余量不足，小步恢复老号已验证容量".into();
+                return;
+            }
         }
         if self.old_limit <= self.config.minimum_old_concurrency {
             self.phase = AccountHandoffPhase::Retaining;
@@ -300,11 +350,23 @@ impl AccountHandoff {
         {
             return;
         }
-        self.previous_old_limit = self.old_limit;
-        self.old_limit = self
+        let next = self
             .old_limit
             .saturating_sub(self.config.decrement)
             .max(self.config.minimum_old_concurrency);
+        if let Some(new_limit) = observation.new_concurrency_limit {
+            let pending = observation.old_in_flight.saturating_sub(self.old_limit);
+            let free = new_limit
+                .saturating_sub(observation.new_in_flight)
+                .saturating_sub(pending)
+                .saturating_sub(self.config.decrement.min(new_limit / 2));
+            if self.old_limit.saturating_sub(next) > free {
+                self.message = "承接或增长余量不足，保持老号当前上限".into();
+                return;
+            }
+        }
+        self.previous_old_limit = self.old_limit;
+        self.old_limit = next;
         self.stable_since_ms = Some(observation.now_ms);
         self.observed_successes = feedback.successes;
         if self.old_limit == self.config.minimum_old_concurrency {

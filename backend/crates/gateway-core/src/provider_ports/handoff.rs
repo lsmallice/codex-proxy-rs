@@ -5,6 +5,19 @@ use futures::future::BoxFuture;
 
 /// 存储端只负责幂等、CAS、共享计数与租约原子约束，不决定交接阶段
 pub trait AccountHandoffStore: Send + Sync {
+    /// 账号缺失表示保护状态未知，Some(limit) 为保护中，None 为已有完成回执
+    fn warmup_capacities(
+        &self,
+        _ids: Vec<crate::account::ProviderAccountId>,
+    ) -> BoxFuture<
+        '_,
+        Result<
+            std::collections::BTreeMap<crate::account::ProviderAccountId, Option<u32>>,
+            ProviderStoreError,
+        >,
+    > {
+        Box::pin(async { Ok(Default::default()) })
+    }
     fn transfer_samples(
         &self,
         _samples: Vec<crate::account::TransferQuotaSample>,

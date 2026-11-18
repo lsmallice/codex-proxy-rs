@@ -242,6 +242,7 @@ async fn account_capacity_should_resolve_limits_for_list_and_detail() {
             let page = store
                 .list_accounts(
                     AccountListQuery {
+                        added_after: None,
                         page: 1,
                         page_size: PageSize::new(20).unwrap(),
                         provider_kind: None,
@@ -315,6 +316,7 @@ async fn account_search_matches_only_name_and_email_literal_substrings() {
         let page = store
             .list_accounts(
                 AccountListQuery {
+                    added_after: None,
                     page: 1,
                     page_size: PageSize::new(10).unwrap(),
                     provider_kind: None,
@@ -351,6 +353,7 @@ async fn provider_filter_applies_before_pagination_even_on_an_empty_page() {
         repository.insert_provider_account(record).await.unwrap();
     }
     let query = AccountListQuery {
+        added_after: None,
         page: 2,
         page_size: PageSize::new(1).unwrap(),
         provider_kind: Some(ProviderKind::new("openai").unwrap()),
@@ -368,6 +371,7 @@ async fn provider_filter_applies_before_pagination_even_on_an_empty_page() {
     let literal = store
         .list_accounts(
             AccountListQuery {
+                added_after: None,
                 page: 1,
                 provider_kind: Some(ProviderKind::new("all").unwrap()),
                 ..query.clone()
@@ -388,6 +392,75 @@ async fn provider_filter_applies_before_pagination_even_on_an_empty_page() {
         .unwrap();
     assert!(empty.items.is_empty());
     assert_eq!(empty.total, 0);
+    database.close().await;
+}
+
+#[tokio::test]
+async fn added_after_filters_before_pagination_and_preserves_global_summary() {
+    let Some(database) = TestDatabase::create("account_added_after").await else {
+        return;
+    };
+    let repository = PgProviderAccountRepository::new(database.pool.clone());
+    let cutoff = chrono::DateTime::parse_from_rfc3339("2026-11-18T08:00:00Z")
+        .unwrap()
+        .with_timezone(&chrono::Utc);
+    for (index, delta) in [-1, 0, 1].into_iter().enumerate() {
+        let id = format!("acct_added_{index}");
+        repository
+            .insert_provider_account(account(&id, &format!("user-added-{index}")))
+            .await
+            .unwrap();
+        sqlx::query("update provider_accounts set created_at=$2 where id=$1")
+            .bind(&id)
+            .bind(cutoff + chrono::Duration::seconds(delta))
+            .execute(&database.pool)
+            .await
+            .unwrap();
+    }
+    let store = admin_account_store(&database.pool);
+    let query = AccountListQuery {
+        page: 1,
+        page_size: PageSize::new(1).unwrap(),
+        provider_kind: Some(ProviderKind::new("openai").unwrap()),
+        group_filter: None,
+        search: None,
+        status: None,
+        sort: None,
+        added_after: Some(cutoff),
+    };
+    for (page, expected) in [
+        (1, Some("acct_added_1")),
+        (2, Some("acct_added_2")),
+        (3, None),
+    ] {
+        let result = store
+            .list_accounts(
+                AccountListQuery {
+                    page,
+                    ..query.clone()
+                },
+                Default::default(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(result.total, 2);
+        assert_eq!(result.summary.total, 3);
+        assert_eq!(
+            result.items.first().map(|item| item.account.id.as_str()),
+            expected
+        );
+    }
+    let all = store
+        .list_accounts(
+            AccountListQuery {
+                added_after: None,
+                ..query
+            },
+            Default::default(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(all.total, 3);
     database.close().await;
 }
 
